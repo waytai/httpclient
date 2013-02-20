@@ -55,7 +55,7 @@ def chat(name, url, wsclient):
 def main():
     name = input('Please enter your name: ').encode()
 
-    url = sys.argv[1]
+    url = 'http://localhost:8080'
     wsclient = WebSocketProto()
 
     loop = tulip.get_event_loop()

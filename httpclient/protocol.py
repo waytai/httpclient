@@ -44,7 +44,7 @@ class HttpStreamReader(http_client.StreamReader):
         method = method.upper()
 
         # uri, when the path starts with //, considers it as an absolute url
-        if uri.startswith(b'//'):
+        if uri.startswith('//'):
             uri = uri[1:]
 
         # version

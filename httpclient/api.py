@@ -40,7 +40,7 @@ def request(method, url, *,
 
       >>> import httpclient
       >>> req = yield from httpclient.request('GET', 'http://python.org/')
-      <Response [200]>
+      <HttpResponse [200]>
 
     """
 

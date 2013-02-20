@@ -79,7 +79,7 @@ class WebSocketProto:
         response = yield from fut
         headers = response.headers
 
-        if response.status_code != 101:
+        if response.status != 101:
             raise ValueError("Handshake error: Invalid response status")
 
         if headers.get('upgrade','').lower() != 'websocket':

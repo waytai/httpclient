@@ -70,6 +70,9 @@ class HttpServer(tulip.Protocol):
                 assert t in done
                 assert not pending
                 self._connections.remove(wsclient)
+
+                for wsc in self._connections:
+                    wsc.send(b'Someone disconnected.')
         else:
             write = self.transport.write
             write(b'HTTP/1.0 200 Ok\r\n')
