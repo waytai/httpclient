@@ -18,12 +18,12 @@ Examples
   >> crawl.py http://python.org
 
 
-* websocket example, simple websocket server and cmd websocket client
+* websocket example, simple websocket server and cmd client
 
-  1. ws server starts on port 8080. start server and open http://localhost:8080 in browser::
+  1. ws server starts on port 8080. start server and open http://localhost:8080 in browser:
 
       >> wsserver.py
 
   2. ws client automatically connects to http://localhost:8080
 
-
+      >> wsclient.py
