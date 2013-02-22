@@ -30,6 +30,40 @@ class HttpStreamReaderTests(unittest.TestCase):
         self.stream.close()
         self.assertTrue(self.transport.close.called)
 
+    def test_request_status(self):
+        self.stream.feed_data(b'get /path HTTP/1.1\r\n')
+        self.assertEqual(
+            ('GET', '/path', (1, 1)),
+            self.ev.run_until_complete(
+                tulip.Task(self.stream.read_request_status())))
+
+        self.stream.feed_data(b'get //path HTTP/1.1\r\n')
+        self.assertEqual(
+            ('GET', '/path', (1, 1)),
+            self.ev.run_until_complete(
+                tulip.Task(self.stream.read_request_status())))
+
+    def test_request_status_bad_status_line(self):
+        self.stream.feed_data(b'\r\n')
+        self.assertRaises(
+            http.client.BadStatusLine,
+            self.ev.run_until_complete,
+            tulip.Task(self.stream.read_request_status()))
+
+    def test_request_status_bad_method(self):
+        self.stream.feed_data(b'12%()+=~$ /get HTTP/1.1\r\n')
+        self.assertRaises(
+            http.client.BadStatusLine,
+            self.ev.run_until_complete,
+            tulip.Task(self.stream.read_request_status()))
+
+    def test_request_status_bad_version(self):
+        self.stream.feed_data(b'GET //get HT/11\r\n')
+        self.assertRaises(
+            http.client.BadStatusLine,
+            self.ev.run_until_complete,
+            tulip.Task(self.stream.read_request_status()))
+
     def test_response_status_bad_status_line(self):
         self.stream.feed_data(b'\r\n')
         self.assertRaises(
@@ -127,6 +161,30 @@ class HttpStreamReaderTests(unittest.TestCase):
     def test_parse_headers_continuation(self):
         headers = self.stream._parse_headers(['test: line\r\n', ' test'])
         self.assertEqual([('TEST', 'line\r\n test')], headers)
+
+    def test_read_headers(self):
+        self.stream.feed_data(b'test: line\r\n')
+        self.stream.feed_data(b' continue\r\n')
+        self.stream.feed_data(b'test2: data\r\n')
+        self.stream.feed_data(b'\r\n')
+
+        headers = self.ev.run_until_complete(
+            tulip.Task(self.stream.read_headers()))
+        self.assertIsInstance(headers, http.client.HTTPMessage)
+        self.assertEqual(headers['TEST'], 'line\r\n continue')
+        self.assertEqual(headers['TEST2'], 'data')
+
+    def test_read_headers_size(self):
+        self.stream.feed_data(b'test: line\r\n')
+        self.stream.feed_data(b' continue\r\n')
+        self.stream.feed_data(b'test2: data\r\n')
+        self.stream.feed_data(b'\r\n')
+
+        self.stream.MAX_HEADERS = 5
+        self.assertRaises(
+            http.client.LineTooLong,
+            self.ev.run_until_complete,
+            tulip.Task(self.stream.read_headers()))
 
 
 class StreamWriterTests(unittest.TestCase):

@@ -2,6 +2,7 @@
 
 __all__ = ['stream', 'request']
 
+import urllib.parse
 from tulip import events
 from tulip import futures
 from tulip import tasks
@@ -74,13 +75,20 @@ def request(method, url, *,
         request.begin(protocol.wstream)
         yield from response.begin(protocol.rstream)
 
-        if response.status_code in (301, 302) and allow_redirects:
+        if response.status in (301, 302) and allow_redirects:
             redirects += 1
             if max_redirects and redirects >= max_redirects:
                 break
 
-            url = (response.headers.get('location') or
-                   response.headers.get('uri'))
+            r_url = (response.headers.get('location') or
+                     response.headers.get('uri'))
+            if r_url[:7] not in ('http://', 'https:/'):
+                scheme, netloc, *_ = urllib.parse.urlsplit(url)
+                url = urllib.parse.urlunsplit(
+                    (scheme, netloc, r_url, '', ''))
+            else:
+                url = r_url
+
             if url:
                 response.close()
                 continue

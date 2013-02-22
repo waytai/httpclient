@@ -13,7 +13,7 @@ from tulip import http_client
 from tulip import tasks
 
 HDRRE = re.compile("[\x00-\x1F\x7F()<>@,;:\[\]={} \t\\\\\"]")
-METHRE = re.compile("[A-Z0-9$-_.]{3,20}")
+METHRE = re.compile("([A-Za-z]+)")
 VERSRE = re.compile("HTTP/(\d+).(\d+)")
 
 
@@ -31,7 +31,7 @@ class HttpStreamReader(http_client.StreamReader):
 
     @tasks.coroutine
     def read_request_status(self):
-        line = str((yield from self.readline()), "iso-8859-1").strip()
+        line = str((yield from self.readline()), 'latin1').strip()
 
         try:
             method, uri, version = line.split(None, 2)
@@ -57,7 +57,7 @@ class HttpStreamReader(http_client.StreamReader):
 
     @tasks.coroutine
     def read_response_status(self):
-        line = str((yield from self.readline()), "iso-8859-1").strip()
+        line = str((yield from self.readline()), 'latin1').strip()
         if not line:
             # Presumably, the server closed the connection before
             # sending a valid response.
@@ -91,16 +91,18 @@ class HttpStreamReader(http_client.StreamReader):
     @tasks.coroutine
     def read_headers(self):
         """Read and parses RFC2822 headers from a stream."""
+        size = 0
         headers = []
         while True:
             line = yield from self.readline()
             if line in (b'\r\n', b'\n', b''):
                 break
 
-            headers.append(str(line, 'latin1'))
+            size += len(line)
+            if size > self.MAX_HEADERS:
+                raise http.client.LineTooLong("max buffer headers")
 
-        if sum(len(h) for h in headers) > self.MAX_HEADERS:
-            raise http.client.LineTooLong("max buffer headers")
+            headers.append(str(line, 'latin1'))
 
         message = http.client.HTTPMessage()
         for name, value in self._parse_headers(headers):

@@ -2,6 +2,7 @@
 
 import http.client
 import io
+import json
 import re
 from tulip import tasks
 
@@ -63,7 +64,7 @@ class HttpResponse:
             self.method == "HEAD"):
             length = 0
         else:
-            if not chunked:
+            if not chunked and "content-length" in self.headers:
                 try:
                     length = int(self.headers.get("content-length"))
                 except ValueError:
@@ -126,5 +127,12 @@ class HttpResponse:
         #          called, meaning self.isclosed() is meaningful.
         return self.stream is None
 
-    def read(self):
-        return (yield from self.body.read())
+    def read(self, decode=False):
+        data = yield from self.body.read()
+
+        if decode:
+            ct = self.headers.get('content-type', '').lower()
+            if ct == 'application/json':
+                data = json.loads(data.decode('utf-8'))
+
+        return data

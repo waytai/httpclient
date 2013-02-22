@@ -7,8 +7,15 @@ import http.cookies
 import io
 import itertools
 import mimetypes
+import os
 import uuid
 import urllib.parse
+
+
+def str_to_bytes(s, encoding='utf-8'):
+    if isinstance(s, bytes):
+        return s
+    return s.encode(encoding)
 
 
 def encode_multipart_formdata(fields, encoding='utf-8'):
@@ -20,18 +27,18 @@ def encode_multipart_formdata(fields, encoding='utf-8'):
         (name, key, value, MIME type) field tuples.
     """
     body = io.BytesIO()
-    boundary = uuid.uuid4().hex
+    boundary = bytes(uuid.uuid4().hex, 'latin1')
 
     for rec in fields:
-        body.write(b'--' + boundary + b'--\r\n')
+        body.write(b'--' + boundary + b'\r\n')
 
-        field, rec = rec[0], rec[1:]
+        field, *rec = rec
 
-        if isinstance(rec, str):
-            data = rec
+        if len(rec) == 1:
+            data = rec[0]
             body.write(
-                ('Content-Disposition: form-data; name="%s"\r\n\r\n' % (
-                    field,).encode(encoding)))
+                (('Content-Disposition: form-data; name="%s"\r\n\r\n' %
+                  (field,)).encode(encoding)))
         else:
             if len(rec) == 3:
                 filename, data, content_type = rec
@@ -45,11 +52,11 @@ def encode_multipart_formdata(fields, encoding='utf-8'):
             body.write(
                 ('Content-Type: %s\r\n\r\n' % (content_type,)).encode(encoding))
 
-        body.write(data.encode('utf-8'))
+        body.write(str_to_bytes(data))
         body.write(b'\r\n')
 
     body.write(b'--' + boundary + b'--\r\n')
-    return body.getvalue(), 'multipart/form-data; boundary=%s' % boundary
+    return body.getvalue(), 'multipart/form-data; boundary=%s'%boundary.decode()
 
 
 class HttpRequest:
@@ -57,6 +64,12 @@ class HttpRequest:
     GET_METHODS = {'DELETE', 'GET', 'HEAD', 'OPTIONS'}
     POST_METHODS = {'PATCH', 'POST', 'PUT', 'TRACE'}
     ALL_METHODS = GET_METHODS.union(POST_METHODS)
+
+    DEFAULT_HEADERS = {
+        'Accept': '*/*',
+        'Accept-Encoding': 'gzip, deflate',
+        'User-Agent': 'tulip http client'
+    }
 
     body = b''
 
@@ -136,6 +149,10 @@ class HttpRequest:
             for key, value in headers:
                 self.headers[key] = value
 
+        for hdr, val in self.DEFAULT_HEADERS.items():
+            if hdr not in self.headers:
+                self.headers[hdr] = val
+
         # host
         if 'host' not in self.headers:
             self.headers['Host'] = self.host
@@ -187,8 +204,12 @@ class HttpRequest:
                 return default
 
             for rec in files:
+                if not isinstance(rec, (tuple, list)):
+                    rec = (rec,)
+
                 ft = None
                 if len(rec) == 1:
+                    rec = rec[0]
                     k = fn = guess_filename(rec, 'unknown')
                     fp = rec
                 elif len(rec) == 2:
@@ -231,10 +252,20 @@ class HttpRequest:
 
         for key, value in self.headers.items():
             wstream.write_str('{}: {}\r\n'.format(key, value))
+
+        body = self.body
+        if body and isinstance(body, str):
+            body = body.encode(self.encoding)
+
+        if 'content-length' not in self.headers:
+            if body:
+                wstream.write_str('Content-Length: {}\r\n'.format(len(body)))
+            else:
+                wstream.write(b'Content-Length: 0\r\n')
+
         wstream.write(b'\r\n')
 
-        if self.body:
-            if isinstance(self.body, bytes):
-                wstream.write(self.body)
-            else:
-                wstream.write(self.body.encode(self.encoding))
+        if body:
+            wstream.write(body)
+
+        wstream.write(b'\r\n')

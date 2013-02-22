@@ -30,11 +30,11 @@ class Crawler:
             url, frag = urllib.parse.urldefrag(url)
             if (url.startswith(self.rooturl) and
                 url not in self.busy and url not in self.done):
-                    yield from self.sem.acquire()
-                    task = self.process(url)
-                    task.add_done_callback(lambda t: self.sem.release())
-                    task.add_done_callback(self.tasks.remove)
-                    self.tasks.add(task)
+                yield from self.sem.acquire()
+                task = self.process(url)
+                task.add_done_callback(lambda t: self.sem.release())
+                task.add_done_callback(self.tasks.remove)
+                self.tasks.add(task)
 
     @tulip.task
     def run(self):
