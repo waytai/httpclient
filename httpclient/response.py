@@ -6,7 +6,6 @@ import json
 import re
 from tulip import tasks
 
-from .protocol import BodyReader
 from .protocol import ChunkedReader, LengthReader, EofReader
 
 
@@ -93,11 +92,13 @@ class HttpResponse:
 
         # body
         if chunked:
-            self.body = BodyReader(ChunkedReader(self.stream), mode)
+            body = self.stream.read_body(ChunkedReader(), mode)
         elif length is not None:
-            self.body = BodyReader(LengthReader(self.stream, length), mode)
+            body = self.stream.read_body(LengthReader(length), mode)
         else:
-            self.body = BodyReader(EofReader(self.stream), mode)
+            body = self.stream.read_body(EofReader(), mode)
+
+        self.content = yield from body
 
         return self
 
@@ -128,7 +129,7 @@ class HttpResponse:
         return self.stream is None
 
     def read(self, decode=False):
-        data = yield from self.body.read()
+        data = self.content
 
         if decode:
             ct = self.headers.get('content-type', '').lower()

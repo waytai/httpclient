@@ -1,6 +1,6 @@
 
 __all__ = ['HttpStreamReader', 'HttpStreamWriter', 'HttpClientProtocol',
-           'BodyReader', 'ChunkedReader', 'LengthReader', 'EofReader',
+           'ChunkedReader', 'LengthReader', 'EofReader',
            'ChunkedWriter', 'DeflateWriter']
 
 import http.client
@@ -154,6 +154,35 @@ class HttpStreamReader(http_client.StreamReader):
 
         return headers
 
+    def read_body(self, reader, encoding=None):
+        if encoding is not None:
+            if encoding == 'gzip':
+                decompress = gzip.decompress
+            elif encoding == 'deflate':
+                decompress = zlib.decompress
+            else:
+                raise ValueError(
+                    'Content-Encoding is not supported %r' % encoding)
+        else:
+            decompress = None
+
+        buf = BytesIO()
+
+        while True:
+            chunk = yield from reader.read(self)
+            if not chunk:
+                break
+
+            if decompress is not None:
+                try:
+                    chunk = decompress(chunk)
+                except:
+                    pass
+
+            buf.write(chunk)
+
+        return buf.getvalue()
+
 
 class HttpStreamWriter:
 
@@ -173,9 +202,6 @@ class HttpStreamWriter:
 
     def write(self, b):
         self.transport.write(b)
-
-    def write_oef(self):
-        pass
 
     def write_str(self, s):
         self.transport.write(self.encode(s))
@@ -209,43 +235,35 @@ class HttpStreamWriter:
 
 class ChunkedReader:
 
-    def __init__(self, stream):
-        self.stream = stream
-        self.finished = False
-
     @tasks.coroutine
-    def read(self):
-        if self.finished:
-            return b''
-
+    def read(self, stream):
         while True:
             try:
-                size = yield from self._read_next_chunk_size()
+                size = yield from self._read_next_chunk_size(stream)
                 if not size:
                     break
             except ValueError:
                 raise http.client.IncompleteRead(b'')
 
             # read chunk
-            data = yield from self.stream.readexactly(size)
+            data = yield from stream.readexactly(size)
 
             # toss the CRLF at the end of the chunk
-            crlf = yield from self.stream.readexactly(2)
+            crlf = yield from stream.readexactly(2)
 
             return data
 
         # read and discard trailer up to the CRLF terminator
         while True:
-            line = yield from self.stream.readline()
+            line = yield from stream.readline()
             if line in (b'\r\n', b'\n', b''):
                 break
 
-        self.finished = True
         return b''
 
-    def _read_next_chunk_size(self):
+    def _read_next_chunk_size(self, stream):
         # Read the next chunk size from the file
-        line = yield from self.stream.readline()
+        line = yield from stream.readline()
 
         i = line.find(b";")
         if i >= 0:
@@ -258,14 +276,13 @@ class ChunkedReader:
 
 class LengthReader:
 
-    def __init__(self, stream, length):
-        self.stream = stream
+    def __init__(self, length):
         self.length = length
 
     @tasks.coroutine
-    def read(self):
+    def read(self, stream):
         if self.length:
-            data = yield from self.stream.readexactly(self.length)
+            data = yield from stream.readexactly(self.length)
             self.length = 0
         else:
             data = b''
@@ -275,54 +292,9 @@ class LengthReader:
 
 class EofReader:
 
-    def __init__(self, stream):
-        self.stream = stream
-        self.finished = False
-
     @tasks.coroutine
-    def read(self):
-        if self.finished:
-            return b''
-
-        self.finished = True
-        return (yield from self.stream.read())
-
-
-class BodyReader:
-
-    def __init__(self, reader, mode=None):
-        self.reader = reader
-        self.buf = BytesIO()
-        self.finished = False
-
-        if mode is not None:
-            if mode == 'gzip':
-                self.dec = gzip
-            elif mode == 'deflate':
-                self.dec = zlib
-            else:
-                raise ValueError(
-                    'Decompression mode is not supported %r' % mode)
-        else:
-            self.dec = None
-
-    def read(self):
-        if not self.finished:
-            while True:
-                chunk = yield from self.reader.read()
-                if not chunk:
-                    self.finished = True
-                    break
-
-                if self.dec is not None:
-                    try:
-                        chunk = self.dec.decompress(chunk)
-                    except:
-                        pass
-
-                self.buf.write(chunk)
-
-        return self.buf.getvalue()
+    def read(self, stream):
+        return (yield from stream.read())
 
 
 class ChunkedWriter:

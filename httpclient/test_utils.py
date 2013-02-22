@@ -114,16 +114,13 @@ class HttpServerProtocol(tulip.Protocol):
 
         # body
         if chunked:
-            body = protocol.BodyReader(
-                protocol.ChunkedReader(self.stream), mode)
+            body = self.stream.read_body(protocol.ChunkedReader(), mode)
         elif length is not None:
-            body = protocol.BodyReader(
-                protocol.LengthReader(self.stream, length), mode)
+            body = self.stream.read_body(protocol.LengthReader(length), mode)
         else:
-            body = protocol.BodyReader(
-                protocol.EofReader(self.stream), mode)
+            body = self.stream.read_body(protocol.EofReader(), mode)
 
-        body = yield from body.read()
+        body = yield from body
 
         try:
             router = self.Router(

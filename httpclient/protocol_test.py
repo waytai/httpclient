@@ -20,6 +20,7 @@ class HttpStreamReaderTests(unittest.TestCase):
 
         self.transport = unittest.mock.Mock()
         self.stream = protocol.HttpStreamReader(self.transport)
+        self.reader = protocol.LengthReader(4)
 
     def test_ctor(self):
         self.ev.close()
@@ -186,6 +187,51 @@ class HttpStreamReaderTests(unittest.TestCase):
             self.ev.run_until_complete,
             tulip.Task(self.stream.read_headers()))
 
+    def test_read_body_unknown_mode(self):
+        self.assertRaises(
+            ValueError, self.ev.run_until_complete,
+            tulip.Task(self.stream.read_body(self.reader, 'unknown')))
+
+    def test_read_body(self):
+        self.stream.feed_data(b'dataline')
+
+        data = self.ev.run_until_complete(
+            tulip.Task(self.stream.read_body(self.reader)))
+        self.assertEqual(b'data', data)
+
+        data2 = self.ev.run_until_complete(
+            tulip.Task(self.stream.read_body(self.reader)))
+        self.assertEqual(b'', data2)
+
+    def test_read_body_gzip(self):
+        data = gzip.compress(b'data')
+        reader = protocol.LengthReader(len(data))
+
+        self.stream.feed_data(data)
+
+        data = self.ev.run_until_complete(
+            tulip.Task(self.stream.read_body(reader, 'gzip')))
+        self.assertEqual(b'data', data)
+
+    def test_read_body_deflate(self):
+        data = zlib.compress(b'data')
+        reader = protocol.LengthReader(len(data))
+
+        self.stream.feed_data(data)
+
+        data = self.ev.run_until_complete(
+            tulip.Task(self.stream.read_body(reader, 'deflate')))
+        self.assertEqual(b'data', data)
+
+    def test_read_body_compress_error(self):
+        data = gzip.compress(b'data')
+        reader = protocol.LengthReader(4)
+        self.stream.feed_data(data)
+
+        data = self.ev.run_until_complete(
+            tulip.Task(self.stream.read_body(reader, 'gzip')))
+        self.assertEqual(data[:4], data)
+
 
 class HttpStreamWriterTests(unittest.TestCase):
 
@@ -235,7 +281,7 @@ class ChunkedReaderTests(unittest.TestCase):
 
     def setUp(self):
         self.stream = protocol.HttpStreamReader()
-        self.reader = protocol.ChunkedReader(self.stream)
+        self.reader = protocol.ChunkedReader()
         self.event_loop = tulip.new_event_loop()
         tulip.set_event_loop(self.event_loop)
 
@@ -245,12 +291,12 @@ class ChunkedReaderTests(unittest.TestCase):
     def test_next_chunk_size(self):
         self.stream.feed_data(b'4;test\r\n')
         data = self.event_loop.run_until_complete(
-            tulip.Task(self.reader._read_next_chunk_size()))
+            tulip.Task(self.reader._read_next_chunk_size(self.stream)))
         self.assertEqual(4, data)
 
         self.stream.feed_data(b'4\r\n')
         data = self.event_loop.run_until_complete(
-            tulip.Task(self.reader._read_next_chunk_size()))
+            tulip.Task(self.reader._read_next_chunk_size(self.stream)))
         self.assertEqual(4, data)
 
     def test_next_chunk_size_error(self):
@@ -258,38 +304,28 @@ class ChunkedReaderTests(unittest.TestCase):
         self.assertRaises(
             ValueError,
             self.event_loop.run_until_complete,
-            tulip.Task(self.reader._read_next_chunk_size()))
+            tulip.Task(self.reader._read_next_chunk_size(self.stream)))
 
     def test_read_size_error(self):
         self.stream.feed_data(b'blah\r\n')
         self.assertRaises(
             http.client.IncompleteRead,
             self.event_loop.run_until_complete,
-            tulip.Task(self.reader.read()))
+            tulip.Task(self.reader.read(self.stream)))
 
     def test_read(self):
         self.stream.feed_data(b'4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n')
 
         data = self.event_loop.run_until_complete(
-            tulip.Task(self.reader.read()))
+            tulip.Task(self.reader.read(self.stream)))
         self.assertEqual(b'data', data)
 
         data = self.event_loop.run_until_complete(
-            tulip.Task(self.reader.read()))
+            tulip.Task(self.reader.read(self.stream)))
         self.assertEqual(b'line', data)
 
         data = self.event_loop.run_until_complete(
-            tulip.Task(self.reader.read()))
-        self.assertEqual(b'', data)
-
-        self.assertTrue(self.reader.finished)
-
-    def test_read_finished(self):
-        self.stream.feed_data(b'4\r\ndata\r\n4\r\nline\r\n0\r\n\r\n')
-        self.reader.finished = True
-
-        data = self.event_loop.run_until_complete(
-            tulip.Task(self.reader.read()))
+            tulip.Task(self.reader.read(self.stream)))
         self.assertEqual(b'', data)
 
 
@@ -304,22 +340,25 @@ class LengthReaderTests(unittest.TestCase):
         self.event_loop.close()
 
     def test_read(self):
-        reader = protocol.LengthReader(self.stream, 8)
+        reader = protocol.LengthReader(8)
         self.stream.feed_data(b'data')
         self.stream.feed_data(b'data')
 
-        data = self.event_loop.run_until_complete(tulip.Task(reader.read()))
+        data = self.event_loop.run_until_complete(
+            tulip.Task(reader.read(self.stream)))
         self.assertEqual(b'datadata', data)
         self.assertEqual(0, reader.length)
 
-        data = self.event_loop.run_until_complete(tulip.Task(reader.read()))
+        data = self.event_loop.run_until_complete(
+            tulip.Task(reader.read(self.stream)))
         self.assertEqual(b'', data)
 
     def test_read_zero(self):
-        reader = protocol.LengthReader(self.stream, 0)
+        reader = protocol.LengthReader(0)
         self.stream.feed_data(b'data')
 
-        data = self.event_loop.run_until_complete(tulip.Task(reader.read()))
+        data = self.event_loop.run_until_complete(
+            tulip.Task(reader.read(self.stream)))
         self.assertEqual(b'', data)
 
         data = self.event_loop.run_until_complete(
@@ -338,79 +377,17 @@ class EofReaderTests(unittest.TestCase):
         self.event_loop.close()
 
     def test_read(self):
-        reader = protocol.EofReader(self.stream)
+        reader = protocol.EofReader()
         self.stream.feed_data(b'data')
         self.stream.feed_eof()
 
-        data = self.event_loop.run_until_complete(tulip.Task(reader.read()))
+        data = self.event_loop.run_until_complete(
+            tulip.Task(reader.read(self.stream)))
         self.assertEqual(b'data', data)
 
-        data = self.event_loop.run_until_complete(tulip.Task(reader.read()))
+        data = self.event_loop.run_until_complete(
+            tulip.Task(reader.read(self.stream)))
         self.assertEqual(b'', data)
-
-
-class BodyReaderTests(unittest.TestCase):
-
-    def setUp(self):
-        self.stream = protocol.HttpStreamReader()
-        self.reader = protocol.LengthReader(self.stream, 4)
-        self.event_loop = tulip.new_event_loop()
-        tulip.set_event_loop(self.event_loop)
-
-    def tearDown(self):
-        self.event_loop.close()
-
-    def test_unknown_mode(self):
-        self.assertRaises(
-            ValueError, protocol.BodyReader, self.reader, 'unknown')
-
-    def test_plain_data(self):
-        self.stream.feed_data(b'dataline')
-
-        body = protocol.BodyReader(self.reader)
-        self.assertIsNone(body.dec)
-
-        data = self.event_loop.run_until_complete(tulip.Task(body.read()))
-        self.assertEqual(b'data', data)
-        self.assertTrue(body.finished)
-
-        data2 = self.event_loop.run_until_complete(tulip.Task(body.read()))
-        self.assertEqual(b'data', data2)
-
-    def test_gzip(self):
-        data = gzip.compress(b'data')
-        reader = protocol.LengthReader(self.stream, len(data))
-
-        self.stream.feed_data(data)
-
-        body = protocol.BodyReader(reader, 'gzip')
-        self.assertIsNotNone(body.dec)
-
-        data = self.event_loop.run_until_complete(tulip.Task(body.read()))
-        self.assertEqual(b'data', data)
-
-    def test_deflate(self):
-        data = zlib.compress(b'data')
-        reader = protocol.LengthReader(self.stream, len(data))
-
-        self.stream.feed_data(data)
-
-        body = protocol.BodyReader(reader, 'deflate')
-        self.assertIsNotNone(body.dec)
-
-        data = self.event_loop.run_until_complete(tulip.Task(body.read()))
-        self.assertEqual(b'data', data)
-
-    def test_compress_error(self):
-        data = gzip.compress(b'data')
-        reader = protocol.LengthReader(self.stream, 4)
-        self.stream.feed_data(data)
-
-        body = protocol.BodyReader(reader, 'gzip')
-        self.assertIsNotNone(body.dec)
-
-        data = self.event_loop.run_until_complete(tulip.Task(body.read()))
-        self.assertEqual(data[:4], data)
 
 
 class HttpClientProtocolTests(unittest.TestCase):
