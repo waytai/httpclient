@@ -16,7 +16,7 @@ from .protocol import HttpClientProtocol
 def request(method, url, *,
             params=None, data=None, headers=None, cookies=None,
             files=None, auth=None, allow_redirects=True, max_redirects=25,
-            encoding='utf-8', version='1.1', timeout=None):
+            encoding='utf-8', version='1.1', timeout=None, chunk_size=8196):
     """Constructs and sends a request. Returns response object
 
     method: http method
@@ -56,7 +56,7 @@ def request(method, url, *,
         request = HttpRequest(
             method, url, params=params, headers=headers, data=data,
             cookies=cookies, files=files, auth=auth, encoding=encoding,
-            version=version)
+            version=version, chunk_size=chunk_size)
         response = HttpResponse(request.method, request.path)
 
         conn = event_loop.create_connection(

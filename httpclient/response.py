@@ -6,8 +6,8 @@ import json
 import re
 from tulip import tasks
 
-from .protocol import Body
-from .protocol import ChunkedStreamReader, LengthStreamReader, EofStreamReader
+from .protocol import BodyReader
+from .protocol import ChunkedReader, LengthReader, EofReader
 
 
 class HttpResponse:
@@ -59,9 +59,9 @@ class HttpResponse:
 
         # does the body have a fixed length? (of zero)
         if (self.status == http.client.NO_CONTENT or
-            self.status == http.client.NOT_MODIFIED or
-            100 <= self.status < 200 or
-            self.method == "HEAD"):
+                self.status == http.client.NOT_MODIFIED or
+                100 <= self.status < 200 or
+                self.method == "HEAD"):
             length = 0
         else:
             if not chunked and "content-length" in self.headers:
@@ -93,11 +93,11 @@ class HttpResponse:
 
         # body
         if chunked:
-            self.body = Body(ChunkedStreamReader(self.stream), mode)
+            self.body = BodyReader(ChunkedReader(self.stream), mode)
         elif length is not None:
-            self.body = Body(LengthStreamReader(self.stream, length), mode)
+            self.body = BodyReader(LengthReader(self.stream, length), mode)
         else:
-            self.body = Body(EofStreamReader(self.stream), mode)
+            self.body = BodyReader(EofReader(self.stream), mode)
 
         return self
 

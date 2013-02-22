@@ -12,7 +12,7 @@ from wsproto import WebSocketProto
 
 
 @tulip.coroutine
-def rstream (wsclient):
+def rstream(wsclient):
     while True:
         try:
             data = yield from wsclient.receive()
@@ -21,26 +21,27 @@ def rstream (wsclient):
         except:
             break
 
-        print (data.strip())
+        print(data.strip())
 
 
 @tulip.coroutine
-def wstream (name, wsclient, stream):
+def wstream(name, wsclient, stream):
     name = name + b': '
 
     while not stream.eof:
         line = name + (yield from stream.readline())
-        print (line.decode().strip())
+        print(line.decode().strip())
         wsclient.send(line)
 
 
 @tulip.task
 def chat(name, url, wsclient):
     yield from wsclient.connect(url)
-    print ('Connected.')
+    print('Connected.')
 
     # stdin reader
     stream = StreamReader()
+
     def cb():
         stream.feed_data(sys.stdin.readline().encode())
 

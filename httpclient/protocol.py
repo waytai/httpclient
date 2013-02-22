@@ -1,7 +1,7 @@
 
-__all__ = ['HttpStreamReader', 'StreamWriter', 'HttpClientProtocol',
-           'Body',
-           'ChunkedStreamReader', 'LengthStreamReader', 'EofStreamReader']
+__all__ = ['HttpStreamReader', 'HttpStreamWriter', 'HttpClientProtocol',
+           'BodyReader', 'ChunkedReader', 'LengthReader', 'EofReader',
+           'ChunkedWriter', 'DeflateWriter']
 
 import http.client
 import re
@@ -155,7 +155,7 @@ class HttpStreamReader(http_client.StreamReader):
         return headers
 
 
-class StreamWriter:
+class HttpStreamWriter:
 
     def __init__(self, transport, encoding='utf-8'):
         self.transport = transport
@@ -174,13 +174,16 @@ class StreamWriter:
     def write(self, b):
         self.transport.write(b)
 
+    def write_oef(self):
+        pass
+
     def write_str(self, s):
         self.transport.write(self.encode(s))
 
-    def write_chunked(self, s):
-        if not s:
+    def write_chunked(self, chunk):
+        if not chunk:
             return
-        data = self.encode(s)
+        data = self.encode(chunk)
         self.write_str('{:x}\r\n'.format(len(data)))
         self.transport.write(data)
         self.transport.write(b'\r\n')
@@ -188,8 +191,23 @@ class StreamWriter:
     def write_chunked_eof(self):
         self.transport.write(b'0\r\n\r\n')
 
+    def write_body(self, data, writers, chunked=False):
+        writer = writers[-1]
+        for wrt in reversed(writers):
+            if writer is wrt:
+                writer = wrt.write(data)
+            else:
+                writer = wrt.write(writer)
 
-class ChunkedStreamReader:
+        if chunked:
+            for chunk in writer:
+                self.write_chunked(chunk)
+        else:
+            for chunk in writer:
+                self.write(chunk)
+
+
+class ChunkedReader:
 
     def __init__(self, stream):
         self.stream = stream
@@ -238,7 +256,7 @@ class ChunkedStreamReader:
             raise
 
 
-class LengthStreamReader:
+class LengthReader:
 
     def __init__(self, stream, length):
         self.stream = stream
@@ -255,7 +273,7 @@ class LengthStreamReader:
         return data
 
 
-class EofStreamReader:
+class EofReader:
 
     def __init__(self, stream):
         self.stream = stream
@@ -270,7 +288,7 @@ class EofStreamReader:
         return (yield from self.stream.read())
 
 
-class Body:
+class BodyReader:
 
     def __init__(self, reader, mode=None):
         self.reader = reader
@@ -307,6 +325,51 @@ class Body:
         return self.buf.getvalue()
 
 
+class ChunkedWriter:
+
+    def __init__(self, chunk_size=None):
+        self.chunk_size = chunk_size
+
+    def write(self, stream):
+        if isinstance(stream, bytes):
+            stream = (stream,)
+        stream = iter(stream)
+
+        buf = BytesIO()
+        while True:
+            while buf.tell() < self.chunk_size:
+                try:
+                    data = next(stream)
+                    buf.write(data)
+                except StopIteration:
+                    yield buf.getvalue()
+                    return
+
+            data = buf.getvalue()
+            chunk, rest = data[:self.chunk_size], data[self.chunk_size:]
+            buf = BytesIO()
+            buf.write(rest)
+
+            yield chunk
+
+
+class DeflateWriter:
+
+    def __init__(self, mode='deflate'):
+        if mode == 'gzip':
+            self.mode = gzip.compress
+        else:
+            self.mode = zlib.compress
+
+    def write(self, stream):
+        if isinstance(stream, bytes):
+            stream = (stream,)
+        stream = iter(stream)
+
+        for chunk in stream:
+            yield self.mode(chunk)
+
+
 class HttpClientProtocol:
     """tulip's Protocol class"""
 
@@ -316,7 +379,7 @@ class HttpClientProtocol:
     def connection_made(self, transport):
         self.transport = transport
         self.rstream = HttpStreamReader(transport)
-        self.wstream = StreamWriter(transport, self.encoding)
+        self.wstream = HttpStreamWriter(transport, self.encoding)
 
     def data_received(self, data):
         self.rstream.feed_data(data)

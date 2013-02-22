@@ -29,7 +29,7 @@ class HttpServer(tulip.Protocol):
             bmethod, bpath, bversion))
 
         headers = yield from self.reader.read_headers()
-        print (headers)
+        print(headers)
 
         if 'websocket' in headers.get('UPGRADE', '').lower():
             # init ws
@@ -97,8 +97,8 @@ class HttpServer(tulip.Protocol):
     def connection_lost(self, exc):
         print('connection lost', exc)
         if (self.handler.done() and
-            not self.handler.cancelled() and
-            self.handler.exception() is not None):
+                not self.handler.cancelled() and
+                self.handler.exception() is not None):
             print('handler exception:', self.handler.exception())
 
 

@@ -101,7 +101,7 @@ class FunctionalTests(unittest.TestCase):
 
         with open(__file__) as f:
             r = self.event_loop.run_until_complete(tasks.Task(
-                api.request('post', url, files={'some': f})))
+                api.request('post', url, files={'some': f}, chunk_size=1024)))
 
             content = self.event_loop.run_until_complete(
                 tasks.Task(r.read(True)))

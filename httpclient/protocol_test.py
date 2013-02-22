@@ -187,15 +187,15 @@ class HttpStreamReaderTests(unittest.TestCase):
             tulip.Task(self.stream.read_headers()))
 
 
-class StreamWriterTests(unittest.TestCase):
+class HttpStreamWriterTests(unittest.TestCase):
 
     def setUp(self):
         self.transport = unittest.mock.Mock()
-        self.writer = protocol.StreamWriter(self.transport)
+        self.writer = protocol.HttpStreamWriter(self.transport)
 
     def test_ctor(self):
         transport = unittest.mock.Mock()
-        writer = protocol.StreamWriter(transport, 'latin-1')
+        writer = protocol.HttpStreamWriter(transport, 'latin-1')
         self.assertIs(writer.transport, transport)
         self.assertEqual(writer.encoding, 'latin-1')
 
@@ -231,11 +231,11 @@ class StreamWriterTests(unittest.TestCase):
         self.assertEqual((b'0\r\n\r\n',), self.transport.write.call_args[0])
 
 
-class ChunkedStreamReaderTests(unittest.TestCase):
+class ChunkedReaderTests(unittest.TestCase):
 
     def setUp(self):
         self.stream = protocol.HttpStreamReader()
-        self.reader = protocol.ChunkedStreamReader(self.stream)
+        self.reader = protocol.ChunkedReader(self.stream)
         self.event_loop = tulip.new_event_loop()
         tulip.set_event_loop(self.event_loop)
 
@@ -293,7 +293,7 @@ class ChunkedStreamReaderTests(unittest.TestCase):
         self.assertEqual(b'', data)
 
 
-class LengthStreamReaderTests(unittest.TestCase):
+class LengthReaderTests(unittest.TestCase):
 
     def setUp(self):
         self.stream = protocol.HttpStreamReader()
@@ -304,7 +304,7 @@ class LengthStreamReaderTests(unittest.TestCase):
         self.event_loop.close()
 
     def test_read(self):
-        reader = protocol.LengthStreamReader(self.stream, 8)
+        reader = protocol.LengthReader(self.stream, 8)
         self.stream.feed_data(b'data')
         self.stream.feed_data(b'data')
 
@@ -316,7 +316,7 @@ class LengthStreamReaderTests(unittest.TestCase):
         self.assertEqual(b'', data)
 
     def test_read_zero(self):
-        reader = protocol.LengthStreamReader(self.stream, 0)
+        reader = protocol.LengthReader(self.stream, 0)
         self.stream.feed_data(b'data')
 
         data = self.event_loop.run_until_complete(tulip.Task(reader.read()))
@@ -327,7 +327,7 @@ class LengthStreamReaderTests(unittest.TestCase):
         self.assertEqual(b'data', data)
 
 
-class EofStreamReaderTests(unittest.TestCase):
+class EofReaderTests(unittest.TestCase):
 
     def setUp(self):
         self.stream = protocol.HttpStreamReader()
@@ -338,7 +338,7 @@ class EofStreamReaderTests(unittest.TestCase):
         self.event_loop.close()
 
     def test_read(self):
-        reader = protocol.EofStreamReader(self.stream)
+        reader = protocol.EofReader(self.stream)
         self.stream.feed_data(b'data')
         self.stream.feed_eof()
 
@@ -349,11 +349,11 @@ class EofStreamReaderTests(unittest.TestCase):
         self.assertEqual(b'', data)
 
 
-class BodyTests(unittest.TestCase):
+class BodyReaderTests(unittest.TestCase):
 
     def setUp(self):
         self.stream = protocol.HttpStreamReader()
-        self.reader = protocol.LengthStreamReader(self.stream, 4)
+        self.reader = protocol.LengthReader(self.stream, 4)
         self.event_loop = tulip.new_event_loop()
         tulip.set_event_loop(self.event_loop)
 
@@ -362,12 +362,12 @@ class BodyTests(unittest.TestCase):
 
     def test_unknown_mode(self):
         self.assertRaises(
-            ValueError, protocol.Body, self.reader, 'unknown')
+            ValueError, protocol.BodyReader, self.reader, 'unknown')
 
     def test_plain_data(self):
         self.stream.feed_data(b'dataline')
 
-        body = protocol.Body(self.reader)
+        body = protocol.BodyReader(self.reader)
         self.assertIsNone(body.dec)
 
         data = self.event_loop.run_until_complete(tulip.Task(body.read()))
@@ -379,11 +379,11 @@ class BodyTests(unittest.TestCase):
 
     def test_gzip(self):
         data = gzip.compress(b'data')
-        reader = protocol.LengthStreamReader(self.stream, len(data))
+        reader = protocol.LengthReader(self.stream, len(data))
 
         self.stream.feed_data(data)
 
-        body = protocol.Body(reader, 'gzip')
+        body = protocol.BodyReader(reader, 'gzip')
         self.assertIsNotNone(body.dec)
 
         data = self.event_loop.run_until_complete(tulip.Task(body.read()))
@@ -391,11 +391,11 @@ class BodyTests(unittest.TestCase):
 
     def test_deflate(self):
         data = zlib.compress(b'data')
-        reader = protocol.LengthStreamReader(self.stream, len(data))
+        reader = protocol.LengthReader(self.stream, len(data))
 
         self.stream.feed_data(data)
 
-        body = protocol.Body(reader, 'deflate')
+        body = protocol.BodyReader(reader, 'deflate')
         self.assertIsNotNone(body.dec)
 
         data = self.event_loop.run_until_complete(tulip.Task(body.read()))
@@ -403,10 +403,10 @@ class BodyTests(unittest.TestCase):
 
     def test_compress_error(self):
         data = gzip.compress(b'data')
-        reader = protocol.LengthStreamReader(self.stream, 4)
+        reader = protocol.LengthReader(self.stream, 4)
         self.stream.feed_data(data)
 
-        body = protocol.Body(reader, 'gzip')
+        body = protocol.BodyReader(reader, 'gzip')
         self.assertIsNotNone(body.dec)
 
         data = self.event_loop.run_until_complete(tulip.Task(body.read()))
@@ -422,7 +422,7 @@ class HttpClientProtocolTests(unittest.TestCase):
         p.connection_made(transport)
         self.assertIs(p.transport, transport)
         self.assertIsInstance(p.rstream, protocol.HttpStreamReader)
-        self.assertIsInstance(p.wstream, protocol.StreamWriter)
+        self.assertIsInstance(p.wstream, protocol.HttpStreamWriter)
 
         p.data_received(b'data')
         self.assertEqual(4, p.rstream.byte_count)

@@ -11,6 +11,8 @@ import os
 import uuid
 import urllib.parse
 
+from .protocol import ChunkedWriter, DeflateWriter
+
 
 def str_to_bytes(s, encoding='utf-8'):
     if isinstance(s, bytes):
@@ -75,7 +77,8 @@ class HttpRequest:
 
     def __init__(self, method, url, *,
                  params=None, headers=None, data=None, cookies=None,
-                 files=None, auth=None, encoding='utf-8', version='1.1'):
+                 files=None, auth=None, encoding='utf-8', version='1.1',
+                 compress=False, chunk_size=None):
         self.method = method.upper()
         self.version = version
         self.encoding = encoding
@@ -172,6 +175,8 @@ class HttpRequest:
 
             self.headers['cookie'] = c.output(header='', sep=';').strip()
 
+        self.chunk_size = chunk_size
+
         # data
         if isinstance(data, dict):
             data = list(data.items())
@@ -230,8 +235,8 @@ class HttpRequest:
                     new_v = (k, fn, fp.read())
                 fields.append(new_v)
 
+            self.chunk_size = chunk_size or 8192
             self.body, content_type = encode_multipart_formdata(fields)
-            self.headers['content-length'] = len(self.body)
             if 'content-type' not in self.headers:
                 self.headers['content-type'] = content_type
 
@@ -257,15 +262,26 @@ class HttpRequest:
         if body and isinstance(body, str):
             body = body.encode(self.encoding)
 
-        if 'content-length' not in self.headers:
+        if not self.chunk_size and 'content-length' not in self.headers:
             if body:
                 wstream.write_str('Content-Length: {}\r\n'.format(len(body)))
             else:
                 wstream.write(b'Content-Length: 0\r\n')
 
+        if not body and 'content-length' not in self.headers:
+            wstream.write(b'Content-Length: 0\r\n')
+
+        if body and self.chunk_size and "transfer-encoding" not in self.headers:
+            wstream.write(b'Transfer-encoding: chunked\r\n')
+
         wstream.write(b'\r\n')
 
         if body:
-            wstream.write(body)
-
-        wstream.write(b'\r\n')
+            if self.chunk_size:
+                wstream.write_body(
+                    body, [ChunkedWriter(chunk_size=self.chunk_size)], True)
+                wstream.write_chunked_eof()
+            else:
+                wstream.write(body)
+        else:
+            wstream.write(b'\r\n')

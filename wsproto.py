@@ -12,7 +12,8 @@ BAD_REQUEST = ('400 Bad Request\r\n',
                [(b'Connection: close\r\n'), (b'Content-Length: 0\r\n')])
 
 
-class WebSocketError(Exception): pass
+class WebSocketError(Exception):
+    pass
 
 
 class WebSocketProto:
@@ -58,7 +59,8 @@ class WebSocketProto:
                  (b"Connection: Upgrade\r\n"),
                  (b"Transfer-Encoding: chunked\r\n"),
                  (b"Sec-WebSocket-Accept: " + base64.b64encode(
-                     hashlib.sha1(key.encode() + WS_KEY).digest())+b'\r\n')])
+                     hashlib.sha1(key.encode() + WS_KEY).digest()) +
+                  b'\r\n')])
 
     @tulip.coroutine
     def connect(self, url):
@@ -67,13 +69,13 @@ class WebSocketProto:
 
         self._wstream, fut = yield from httpclient.stream(
             'get', self.url,
-            headers = {
+            headers={
                 'UPGRADE': 'WebSocket',
                 'CONNECTION': 'Upgrade',
                 'SEC-WEBSOCKET-VERSION': '13',
                 'SEC-WEBSOCKET-KEY': self.sec_key.decode(),
             },
-            timeout = 1.0
+            timeout=1.0
         )
 
         response = yield from fut
@@ -82,10 +84,10 @@ class WebSocketProto:
         if response.status != 101:
             raise ValueError("Handshake error: Invalid response status")
 
-        if headers.get('upgrade','').lower() != 'websocket':
+        if headers.get('upgrade', '').lower() != 'websocket':
             raise ValueError("Handshake error - Invalid upgrade header")
 
-        if headers.get('connection','').lower() != 'upgrade':
+        if headers.get('connection', '').lower() != 'upgrade':
             raise ValueError("Handshake error - Invalid connection header")
 
         key = headers.get('sec-websocket-accept', '').encode()
@@ -133,7 +135,7 @@ class WebSocketProto:
                 str(data))
 
         if (len(self._chunks) > 0 and fin == 1 and
-            (self.OPCODE_TEXT <= opcode <= self.OPCODE_BINARY)):
+                (self.OPCODE_TEXT <= opcode <= self.OPCODE_BINARY)):
             self.close(1002)
             raise WebSocketError(
                 'Received new unfragmented data frame during '
@@ -249,7 +251,8 @@ class WebSocketProto:
 
             elif f_opcode == self.OPCODE_CLOSE:
                 if len(f_payload) >= 2:
-                    self.close_code = struct.unpack('!H', str(f_payload[:2]))[0]
+                    self.close_code = struct.unpack(
+                        '!H', str(f_payload[:2]))[0]
                     self.close_message = f_payload[2:]
                 elif f_payload:
                     raise WebSocketError(
