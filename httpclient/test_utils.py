@@ -62,27 +62,29 @@ class HttpServerProtocol(tulip.Protocol):
         self.server = server
         self.Router = router
         self.transport = None
-        self.stream = None
+        self.rstream = None
+        self.wstream = None
         self.handler = None
 
     def connection_made(self, transport):
         self.transport = transport
-        self.stream = protocol.HttpStreamReader(transport)
+        self.rstream = protocol.HttpStreamReader(transport)
+        self.wstream = protocol.HttpStreamWriter(transport)
         self.handler = self.handle_request()
 
     def data_received(self, data):
-        self.stream.feed_data(data)
+        self.rstream.feed_data(data)
 
     def eof_received(self):
-        self.stream.feed_eof()
+        self.rstream.feed_eof()
 
     def connection_lost(self, exc):
         pass
 
     @tulip.task
     def handle_request(self):
-        method, path, version = yield from self.stream.read_request_status()
-        headers = yield from self.stream.read_headers()
+        method, path, version = yield from self.rstream.read_request_status()
+        headers = yield from self.rstream.read_headers()
 
         # content encoding
         enc = headers.get('content-encoding', '').lower()
@@ -114,18 +116,18 @@ class HttpServerProtocol(tulip.Protocol):
 
         # body
         if chunked:
-            body = self.stream.read_body(protocol.ChunkedReader(), mode)
+            body = self.rstream.read_body(protocol.ChunkedReader(), mode)
         elif length is not None:
-            body = self.stream.read_body(protocol.LengthReader(length), mode)
+            body = self.rstream.read_body(protocol.LengthReader(length), mode)
         else:
-            body = self.stream.read_body(protocol.EofReader(), mode)
+            body = self.rstream.read_body(protocol.EofReader(), mode)
 
         body = yield from body
 
         try:
             router = self.Router(
-                self.server, self.transport,
-                (method, path, version), headers, body)
+                self.server, self.transport, self.wstream,
+                (method, path, version, mode), headers, body)
             router.dispatch()
         except:
             out = io.StringIO()
@@ -146,12 +148,14 @@ class Router:
                   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-    def __init__(self, server, transport, status, headers, body):
+    def __init__(self, server, transport, stream, status, headers, body):
         self._server = server
         self._transport = transport
+        self._stream = stream
         self._method = status[0]
         self._full_path = status[1]
         self._version = status[2]
+        self._compression = status[3]
         self._headers = headers
         self._body = body
 
@@ -182,7 +186,7 @@ class Router:
 
         return self._response(404)
 
-    def _response(self, code, body=None, headers=None):
+    def _response(self, code, body=None, headers=None, writers=()):
         r_headers = {}
         for key, val in self._headers.items():
             key = '-'.join(p.capitalize() for p in key.split('-'))
@@ -196,6 +200,7 @@ class Router:
             'origin': self._transport.get_extra_info('addr', ' ')[0],
             'query': self._query,
             'form': {},
+            'compression': self._compression,
             'multipart-data': []
         }
         if body:
@@ -232,7 +237,7 @@ class Router:
 
         body = json.dumps(resp, indent=4, sort_keys=True)
 
-        write = self._transport.write
+        write = self._stream.write
 
         # write status
         write(str_to_bytes('%s %s %s\r\n' % (
@@ -259,4 +264,5 @@ class Router:
                 write(str_to_bytes('%s: %s\r\n' % (hdr, str(val).strip())))
 
         write(b'\r\n')
-        write(str_to_bytes(body))
+
+        self._stream.write_body(str_to_bytes(body), writers)

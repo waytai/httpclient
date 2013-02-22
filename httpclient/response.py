@@ -31,7 +31,7 @@ class HttpResponse:
         print(self.headers, file=out)
         return out.getvalue()
 
-    def begin(self, stream):
+    def start(self, stream):
         if self.stream is not None:
             raise RuntimeError('Response is in process.')
 

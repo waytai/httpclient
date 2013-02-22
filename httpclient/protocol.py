@@ -5,7 +5,6 @@ __all__ = ['HttpStreamReader', 'HttpStreamWriter', 'HttpClientProtocol',
 
 import http.client
 import re
-import gzip
 import zlib
 from io import BytesIO
 
@@ -156,26 +155,29 @@ class HttpStreamReader(http_client.StreamReader):
 
     def read_body(self, reader, encoding=None):
         if encoding is not None:
-            if encoding == 'gzip':
-                decompress = gzip.decompress
-            elif encoding == 'deflate':
-                decompress = zlib.decompress
-            else:
+            if encoding not in ('gzip', 'deflate'):
                 raise ValueError(
                     'Content-Encoding is not supported %r' % encoding)
+
+            zlib_mode = (16 + zlib.MAX_WBITS
+                         if encoding == 'gzip' else -zlib.MAX_WBITS)
+
+            dec = zlib.decompressobj(zlib_mode)
         else:
-            decompress = None
+            dec = None
 
         buf = BytesIO()
 
         while True:
             chunk = yield from reader.read(self)
             if not chunk:
+                if dec is not None:
+                    buf.write(dec.flush())
                 break
 
-            if decompress is not None:
+            if dec is not None:
                 try:
-                    chunk = decompress(chunk)
+                    chunk = dec.decompress(chunk)
                 except:
                     pass
 
@@ -217,19 +219,18 @@ class HttpStreamWriter:
     def write_chunked_eof(self):
         self.transport.write(b'0\r\n\r\n')
 
-    def write_body(self, data, writers, chunked=False):
-        writer = writers[-1]
-        for wrt in reversed(writers):
-            if writer is wrt:
-                writer = wrt.write(data)
-            else:
-                writer = wrt.write(writer)
+    def write_body(self, data, writers=None, chunked=False):
+        if writers:
+            for wrt in writers:
+                data = wrt.write(data)
+        elif isinstance(data, bytes):
+            data = (data,)
 
         if chunked:
-            for chunk in writer:
+            for chunk in data:
                 self.write_chunked(chunk)
         else:
-            for chunk in writer:
+            for chunk in data:
                 self.write(chunk)
 
 
@@ -327,11 +328,11 @@ class ChunkedWriter:
 
 class DeflateWriter:
 
-    def __init__(self, mode='deflate'):
-        if mode == 'gzip':
-            self.mode = gzip.compress
-        else:
-            self.mode = zlib.compress
+    def __init__(self, encoding='deflate'):
+        zlib_mode = (16 + zlib.MAX_WBITS
+                     if encoding == 'gzip' else -zlib.MAX_WBITS)
+
+        self.zlib = zlib.compressobj(wbits=zlib_mode)
 
     def write(self, stream):
         if isinstance(stream, bytes):
@@ -339,7 +340,9 @@ class DeflateWriter:
         stream = iter(stream)
 
         for chunk in stream:
-            yield self.mode(chunk)
+            yield self.zlib.compress(chunk)
+
+        yield self.zlib.flush()
 
 
 class HttpClientProtocol:

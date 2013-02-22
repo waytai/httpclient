@@ -8,7 +8,7 @@ from pprint import pprint
 import tulip
 from tulip import tasks
 
-from . import api
+from . import api, protocol
 from .test_utils import Router, HttpServer
 
 
@@ -103,6 +103,29 @@ class FunctionalTests(unittest.TestCase):
             f.seek(0)
             filename = os.path.split(f.name)[-1]
 
+            self.assertEqual(1, len(content['multipart-data']))
+            self.assertEqual(
+                'some', content['multipart-data'][0]['name'])
+            self.assertEqual(
+                filename, content['multipart-data'][0]['filename'])
+            self.assertEqual(
+                f.read(), content['multipart-data'][0]['data'])
+            self.assertEqual(r.status, 200)
+
+    def test_POST_FILES_DEFLATE(self):
+        url = self.server.url('method', 'post')
+
+        with open(__file__) as f:
+            r = self.event_loop.run_until_complete(tasks.Task(
+                api.request('post', url, files={'some': f},
+                            chunk_size=1024, compress='deflate')))
+
+            content = r.read(True)
+
+            f.seek(0)
+            filename = os.path.split(f.name)[-1]
+
+            self.assertEqual('deflate', content['compression'])
             self.assertEqual(1, len(content['multipart-data']))
             self.assertEqual(
                 'some', content['multipart-data'][0]['name'])
@@ -221,11 +244,13 @@ class FunctionalTests(unittest.TestCase):
                 f.read(), content['multipart-data'][1]['data'])
             self.assertEqual(r.status, 200)
 
-    def _test_decompress(self):
+    def test_encoding(self):
         r = self.event_loop.run_until_complete(tasks.Task(
-            api.request('get', self.server.url('decompress', 'gzip'))))
+            api.request('get', self.server.url('encoding', 'deflate'))))
+        self.assertEqual(r.status, 200)
 
-        print(r.headers)
+        r = self.event_loop.run_until_complete(tasks.Task(
+            api.request('get', self.server.url('encoding', 'gzip'))))
         self.assertEqual(r.status, 200)
 
 
@@ -251,6 +276,11 @@ class HttpClientFunctional(Router):
             self._response(
                 302, headers={'Location': self._path})
 
-    @Router.define('/decompress/(gzip|deflate)$')
-    def decompress(self, match):
-        pass
+    @Router.define('/encoding/(gzip|deflate)$')
+    def encoding(self, match):
+        mode = match.group(1)
+
+        self._response(
+            200,
+            headers={'Content-encoding': mode},
+            writers=[protocol.DeflateWriter(mode)])

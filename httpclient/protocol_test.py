@@ -214,7 +214,7 @@ class HttpStreamReaderTests(unittest.TestCase):
         self.assertEqual(b'data', data)
 
     def test_read_body_deflate(self):
-        data = zlib.compress(b'data')
+        data = b''.join(protocol.DeflateWriter().write(b'data'))
         reader = protocol.LengthReader(len(data))
 
         self.stream.feed_data(data)
@@ -224,7 +224,7 @@ class HttpStreamReaderTests(unittest.TestCase):
         self.assertEqual(b'data', data)
 
     def test_read_body_compress_error(self):
-        data = gzip.compress(b'data')
+        data = b'datadatadata'
         reader = protocol.LengthReader(4)
         self.stream.feed_data(data)
 
@@ -275,6 +275,52 @@ class HttpStreamWriterTests(unittest.TestCase):
     def test_write_eof(self):
         self.writer.write_chunked_eof()
         self.assertEqual((b'0\r\n\r\n',), self.transport.write.call_args[0])
+
+    def test_write_body_simple(self):
+        write = self.writer.write = unittest.mock.Mock()
+
+        self.writer.write_body(b'data')
+        self.assertTrue((b'data',), write.call_args[0])
+
+        write.reset_mock()
+        self.writer.write_body((b'data1', 'data2'))
+        self.assertTrue(2, write.call_count)
+
+    def test_write_body_simple_chunked(self):
+        write = self.writer.write_chunked = unittest.mock.Mock()
+
+        self.writer.write_body(b'data', chunked=True)
+        self.assertTrue((b'data',), write.call_args[0])
+
+        write.reset_mock()
+        self.writer.write_body((b'data1', 'data2'), chunked=True)
+        self.assertTrue(2, write.call_count)
+
+    def test_write_body_writers(self):
+        write = self.writer.write = unittest.mock.Mock()
+
+        self.writer.write_body(b'data', [protocol.ChunkedWriter(2)])
+        self.assertTrue((b'da',), write.call_args[0])
+        self.assertTrue(2, write.call_count)
+
+        write.reset_mock()
+        self.writer.write_body(
+            (b'data1', b'data2'), [protocol.ChunkedWriter(2)])
+        self.assertTrue(5, write.call_count)
+
+    def test_write_body_writers_chunked(self):
+        write = self.writer.write_chunked = unittest.mock.Mock()
+
+        self.writer.write_body(
+            b'data', [protocol.ChunkedWriter(2)], True)
+        self.assertTrue((b'da',), write.call_args[0])
+        self.assertTrue(2, write.call_count)
+
+        write.reset_mock()
+        self.writer.write_body(
+            (b'data1', b'data2',), 
+            [protocol.ChunkedWriter(2), protocol.DeflateWriter()], True)
+        self.assertTrue(5, write.call_count)
 
 
 class ChunkedReaderTests(unittest.TestCase):

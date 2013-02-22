@@ -78,10 +78,12 @@ class HttpRequest:
     def __init__(self, method, url, *,
                  params=None, headers=None, data=None, cookies=None,
                  files=None, auth=None, encoding='utf-8', version='1.1',
-                 compress=False, chunk_size=None):
+                 compress=None, chunk_size=None):
         self.method = method.upper()
         self.version = version
         self.encoding = encoding
+        self.chunk_size = chunk_size
+        self.compress = compress
 
         scheme, netloc, path, query, fragment = urllib.parse.urlsplit(url)
         if not netloc:
@@ -251,7 +253,7 @@ class HttpRequest:
             else:
                 raise ValueError("Only basic auth is supported")
 
-    def begin(self, wstream):
+    def start(self, wstream):
         line = '{} {} HTTP/{}\r\n'.format(self.method, self.path, self.version)
         wstream.write_str(line)
 
@@ -274,12 +276,19 @@ class HttpRequest:
         if body and self.chunk_size and "transfer-encoding" not in self.headers:
             wstream.write(b'Transfer-encoding: chunked\r\n')
 
+        writers = []
+        if self.chunk_size:
+            writers.append(ChunkedWriter(self.chunk_size))
+        if self.compress:
+            wstream.write(
+                str_to_bytes('Content-encoding: %s\r\n' % self.compress))
+            writers.append(DeflateWriter(self.compress))
+
         wstream.write(b'\r\n')
 
         if body:
             if self.chunk_size:
-                wstream.write_body(
-                    body, [ChunkedWriter(chunk_size=self.chunk_size)], True)
+                wstream.write_body(body, writers, True)
                 wstream.write_chunked_eof()
             else:
                 wstream.write(body)
