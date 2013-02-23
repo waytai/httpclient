@@ -244,16 +244,11 @@ class HttpRequest:
         for key, value in self.headers.items():
             wstream.write_str('{}: {}\r\n'.format(key, value))
 
-        body = self.body
-        if body and isinstance(body, str):
-            body = body.encode(self.encoding)
-
         wstream.write(b'\r\n')
 
-        if body:
-            wstream.write_body(body, self.writers, self.chunked)
-        else:
-            wstream.write(b'\r\n')
+        if self.body:
+            wstream.write_body(
+                str_to_bytes(self.body), self.writers, self.chunked)
 
 
 def str_to_bytes(s, encoding='utf-8'):
