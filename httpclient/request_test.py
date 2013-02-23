@@ -2,6 +2,7 @@
 """Tests for request.py"""
 
 import unittest
+import unittest.mock
 import urllib.parse
 
 from . import protocol
@@ -46,6 +47,10 @@ class HttpRequestTests(unittest.TestCase):
 
     def test_invalid_url(self):
         self.assertRaises(ValueError, HttpRequest, 'get', 'hiwpefhipowhefopw')
+
+    def test_invalid_idna(self):
+        self.assertRaises(
+            ValueError, HttpRequest, 'get', 'http://\u2061owhefopw.com')
 
     def test_no_path(self):
         req = HttpRequest('get', 'http://python.org')
@@ -135,7 +140,7 @@ class HttpRequestTests(unittest.TestCase):
             self.assertEqual(
                 '/', req.path)
             self.assertEqual(
-                'life=42', req.body)
+                b'life=42', req.body)
             self.assertEqual(
                 'application/x-www-form-urlencoded',
                 req.headers['content-type'])

@@ -60,8 +60,7 @@ class HttpResponse:
         # does the body have a fixed length? (of zero)
         if (self.status == http.client.NO_CONTENT or
                 self.status == http.client.NOT_MODIFIED or
-                100 <= self.status < 200 or
-                self.method == "HEAD"):
+                100 <= self.status < 200 or self.method == "HEAD"):
             length = 0
         else:
             if not chunked and "content-length" in self.headers:

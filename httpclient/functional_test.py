@@ -148,6 +148,28 @@ class FunctionalTests(unittest.TestCase):
                 f.read(), content['multipart-data'][0]['data'])
             self.assertEqual(r.status, 200)
 
+    def test_POST_FILES_STR(self):
+        url = self.server.url('method', 'post')
+
+        with open(__file__) as f:
+            r = self.event_loop.run_until_complete(tasks.Task(
+                api.request('post', url, files=[('some', f.read())])))
+
+            content = self.event_loop.run_until_complete(
+                tasks.Task(r.read(True)))
+
+            f.seek(0)
+            filename = os.path.split(f.name)[-1]
+
+            self.assertEqual(1, len(content['multipart-data']))
+            self.assertEqual(
+                'some', content['multipart-data'][0]['name'])
+            self.assertEqual(
+                'some', content['multipart-data'][0]['filename'])
+            self.assertEqual(
+                f.read(), content['multipart-data'][0]['data'])
+            self.assertEqual(r.status, 200)
+
     def test_POST_FILES_LIST(self):
         url = self.server.url('method', 'post')
 

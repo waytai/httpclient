@@ -133,17 +133,17 @@ class HttpRequest:
         # Content-encoding
         enc = self.headers.get('Content-Encoding', '').lower()
         if enc:
-            if not chunked: # enable chunked, no need to deal with length
+            if not chunked:  # enable chunked, no need to deal with length
                 chunked = True
             self.writers.append(DeflateWriter(enc))
         elif compress:
-            if not chunked: # enable chunked, no need to deal with length
+            if not chunked:  # enable chunked, no need to deal with length
                 chunked = True
             compress = compress if isinstance(compress, str) else 'deflate'
             self.headers['Content-Encoding'] = compress
             self.writers.append(DeflateWriter(compress))
 
-        # data
+        # form data (x-www-form-urlencoded)
         if isinstance(data, dict):
             data = list(data.items())
 
@@ -151,28 +151,23 @@ class HttpRequest:
             if not isinstance(data, str):
                 data = urllib.parse.urlencode(data, doseq=True)
 
-            self.body = data
+            self.body = data.encode(encoding)
             if 'content-type' not in self.headers:
                 self.headers['content-type'] = (
                     'application/x-www-form-urlencoded')
             if 'content-length' not in self.headers:
                 self.headers['content-length'] = len(self.body)
 
+        # files (multipart/form-data)
         elif files:
             fields = []
 
             if data:
                 for field, val in data:
-                    fields.append((field, str(val)))
+                    fields.append((field, str_to_bytes(val)))
 
             if isinstance(files, dict):
                 files = list(files.items())
-
-            def guess_filename(obj, default=None):
-                name = getattr(obj, 'name', None)
-                if name and name[0] != '<' and name[-1] != '>':
-                    return os.path.split(name)[-1]
-                return default
 
             for rec in files:
                 if not isinstance(rec, (tuple, list)):
@@ -180,31 +175,27 @@ class HttpRequest:
 
                 ft = None
                 if len(rec) == 1:
-                    rec = rec[0]
-                    k = fn = guess_filename(rec, 'unknown')
-                    fp = rec
+                    k = guess_filename(rec[0], 'unknown')
+                    fields.append((k, k, rec[0]))
+
                 elif len(rec) == 2:
                     k, fp = rec
                     fn = guess_filename(fp, k)
+                    fields.append((k, fn, fp))
+
                 else:
                     k, fp, ft = rec
                     fn = guess_filename(fp, k)
-
-                if isinstance(fp, str):
-                    fp = io.StringIO(fp)
-                if isinstance(fp, bytes):
-                    fp = io.BytesIO(fp)
-
-                if ft:
-                    new_v = (k, fn, fp.read(), ft)
-                else:
-                    new_v = (k, fn, fp.read())
-                fields.append(new_v)
+                    fields.append((k, fn, fp, ft))
 
             chunked = chunked or 8192
-            self.body, content_type = encode_multipart_formdata(fields)
+            boundary = uuid.uuid4().hex
+
+            self.body = encode_multipart_data(fields, bytes(boundary, 'latin1'))
+
             if 'content-type' not in self.headers:
-                self.headers['content-type'] = content_type
+                self.headers['content-type'] = (
+                    'multipart/form-data; boundary=%s' % boundary)
 
         # chunked
         te = self.headers.get('transfer-encoding', '').lower()
@@ -247,52 +238,64 @@ class HttpRequest:
         wstream.write(b'\r\n')
 
         if self.body:
-            wstream.write_body(
-                str_to_bytes(self.body), self.writers, self.chunked)
+            wstream.write_body(self.body, self.writers, self.chunked)
 
 
 def str_to_bytes(s, encoding='utf-8'):
-    if isinstance(s, bytes):
-        return s
-    return s.encode(encoding)
+    if isinstance(s, str):
+        return s.encode(encoding)
+    return s
 
 
-def encode_multipart_formdata(fields, encoding='utf-8'):
+def guess_filename(obj, default=None):
+    name = getattr(obj, 'name', None)
+    if name and name[0] != '<' and name[-1] != '>':
+        return os.path.split(name)[-1]
+    return default
+
+
+def encode_multipart_data(fields, boundary, encoding='utf-8', chunk_size=8196):
     """
     Encode a list of fields using the multipart/form-data MIME format.
 
     fields:
-        List of (name, value) or (name, key, value) or
-        (name, key, value, MIME type) field tuples.
+        List of (name, value) or (name, filename, io) or
+        (name, filename, io, MIME type) field tuples.
     """
-    body = io.BytesIO()
-    boundary = bytes(uuid.uuid4().hex, 'latin1')
-
     for rec in fields:
-        body.write(b'--' + boundary + b'\r\n')
+        yield b'--' + boundary + b'\r\n'
 
         field, *rec = rec
 
         if len(rec) == 1:
             data = rec[0]
-            body.write(
-                (('Content-Disposition: form-data; name="%s"\r\n\r\n' %
-                  (field,)).encode(encoding)))
+            yield (('Content-Disposition: form-data; name="%s"\r\n\r\n' %
+                    (field,)).encode(encoding))
+            yield data + b'\r\n'
+
         else:
             if len(rec) == 3:
-                filename, data, content_type = rec
+                fn, fp, ct = rec
             else:
-                filename, data = rec
-                content_type = (mimetypes.guess_type(filename)[0] or
-                                'application/octet-stream')
-            body.write(
-                ('Content-Disposition: form-data; name="%s"; '
-                 'filename="%s"\r\n' % (field, filename)).encode(encoding))
-            body.write(
-                ('Content-Type: %s\r\n\r\n' % (content_type,)).encode(encoding))
+                fn, fp = rec
+                ct = (mimetypes.guess_type(fn)[0] or 'application/octet-stream')
 
-        body.write(str_to_bytes(data))
-        body.write(b'\r\n')
+            yield ('Content-Disposition: form-data; name="%s"; '
+                   'filename="%s"\r\n' % (field, fn)).encode(encoding)
+            yield ('Content-Type: %s\r\n\r\n' % (ct,)).encode(encoding)
 
-    body.write(b'--' + boundary + b'--\r\n')
-    return body.getvalue(), 'multipart/form-data; boundary=%s'%boundary.decode()
+            if isinstance(fp, str):
+                fp = fp.encode(encoding)
+
+            if isinstance(fp, bytes):
+                fp = io.BytesIO(fp)
+
+            while True:
+                chunk = fp.read(chunk_size)
+                if not chunk:
+                    break
+                yield str_to_bytes(chunk)
+
+            yield b'\r\n'
+
+    yield b'--' + boundary + b'--\r\n'
