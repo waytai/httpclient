@@ -34,6 +34,7 @@ class HttpServer(tulip.Protocol):
                 path = None
             else:
                 isdir = os.path.isdir(path)
+
         if not path:
             self.transport.write(b'HTTP/1.0 404 Not found\r\n\r\n')
             self.transport.close()
