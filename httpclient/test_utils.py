@@ -26,6 +26,8 @@ def str_to_bytes(s):
 
 class HttpServer:
 
+    noresponse = False
+
     def __init__(self, router, loop, host='127.0.0.1', port=8080):
         self.loop = loop
         self.host = host
@@ -124,6 +126,9 @@ class HttpServerProtocol(tulip.Protocol):
 
         body = yield from body
 
+        if self.server.noresponse:
+            return
+
         try:
             router = self.Router(
                 self.server, self.transport, self.wstream,
@@ -186,7 +191,8 @@ class Router:
 
         return self._response(404)
 
-    def _response(self, code, body=None, headers=None, writers=()):
+    def _response(self, code, body=None,
+                  headers=None, writers=(), chunked=False):
         r_headers = {}
         for key, val in self._headers.items():
             key = '-'.join(p.capitalize() for p in key.split('-'))
@@ -265,4 +271,4 @@ class Router:
 
         write(b'\r\n')
 
-        self._stream.write_body(str_to_bytes(body), writers)
+        self._stream.write_body(str_to_bytes(body), writers, chunked)

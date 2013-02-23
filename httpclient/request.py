@@ -1,6 +1,7 @@
 """http request"""
 
 import base64
+import collections
 import email.message
 import http.client
 import http.cookies
@@ -12,53 +13,6 @@ import uuid
 import urllib.parse
 
 from .protocol import ChunkedWriter, DeflateWriter
-
-
-def str_to_bytes(s, encoding='utf-8'):
-    if isinstance(s, bytes):
-        return s
-    return s.encode(encoding)
-
-
-def encode_multipart_formdata(fields, encoding='utf-8'):
-    """
-    Encode a list of fields using the multipart/form-data MIME format.
-
-    fields:
-        List of (name, value) or (name, key, value) or
-        (name, key, value, MIME type) field tuples.
-    """
-    body = io.BytesIO()
-    boundary = bytes(uuid.uuid4().hex, 'latin1')
-
-    for rec in fields:
-        body.write(b'--' + boundary + b'\r\n')
-
-        field, *rec = rec
-
-        if len(rec) == 1:
-            data = rec[0]
-            body.write(
-                (('Content-Disposition: form-data; name="%s"\r\n\r\n' %
-                  (field,)).encode(encoding)))
-        else:
-            if len(rec) == 3:
-                filename, data, content_type = rec
-            else:
-                filename, data = rec
-                content_type = (mimetypes.guess_type(filename)[0] or
-                                'application/octet-stream')
-            body.write(
-                ('Content-Disposition: form-data; name="%s"; '
-                 'filename="%s"\r\n' % (field, filename)).encode(encoding))
-            body.write(
-                ('Content-Type: %s\r\n\r\n' % (content_type,)).encode(encoding))
-
-        body.write(str_to_bytes(data))
-        body.write(b'\r\n')
-
-    body.write(b'--' + boundary + b'--\r\n')
-    return body.getvalue(), 'multipart/form-data; boundary=%s'%boundary.decode()
 
 
 class HttpRequest:
@@ -78,12 +32,11 @@ class HttpRequest:
     def __init__(self, method, url, *,
                  params=None, headers=None, data=None, cookies=None,
                  files=None, auth=None, encoding='utf-8', version='1.1',
-                 compress=None, chunk_size=None):
+                 compress=None, chunked=None):
         self.method = method.upper()
         self.version = version
         self.encoding = encoding
-        self.chunk_size = chunk_size
-        self.compress = compress
+        self.writers = collections.deque()
 
         scheme, netloc, path, query, fragment = urllib.parse.urlsplit(url)
         if not netloc:
@@ -177,7 +130,18 @@ class HttpRequest:
 
             self.headers['cookie'] = c.output(header='', sep=';').strip()
 
-        self.chunk_size = chunk_size
+        # Content-encoding
+        enc = self.headers.get('Content-Encoding', '').lower()
+        if enc:
+            if not chunked: # enable chunked, no need to deal with length
+                chunked = True
+            self.writers.append(DeflateWriter(enc))
+        elif compress:
+            if not chunked: # enable chunked, no need to deal with length
+                chunked = True
+            compress = compress if isinstance(compress, str) else 'deflate'
+            self.headers['Content-Encoding'] = compress
+            self.writers.append(DeflateWriter(compress))
 
         # data
         if isinstance(data, dict):
@@ -237,10 +201,30 @@ class HttpRequest:
                     new_v = (k, fn, fp.read())
                 fields.append(new_v)
 
-            self.chunk_size = chunk_size or 8192
+            chunked = chunked or 8192
             self.body, content_type = encode_multipart_formdata(fields)
             if 'content-type' not in self.headers:
                 self.headers['content-type'] = content_type
+
+        # chunked
+        te =  self.headers.get('transfer-encoding', '').lower()
+
+        if chunked:
+            self.chunked = True
+            if 'content-length' in self.headers:
+                del self.headers['content-length']
+            if 'chunked' not in te:
+                self.headers['Transfer-encoding'] = 'chunked'
+
+            chunk_size = chunked if type(chunked) is int else 8196
+            self.writers.appendleft(ChunkedWriter(chunk_size))
+        else:
+            if 'chunked' in te:
+                self.chunked = True
+                self.writers.appendleft(ChunkedWriter(8196))
+            else:
+                self.chunked = False
+                self.headers['content-length'] = len(self.body)
 
         # auth
         if auth:
@@ -264,33 +248,56 @@ class HttpRequest:
         if body and isinstance(body, str):
             body = body.encode(self.encoding)
 
-        if not self.chunk_size and 'content-length' not in self.headers:
-            if body:
-                wstream.write_str('Content-Length: {}\r\n'.format(len(body)))
-            else:
-                wstream.write(b'Content-Length: 0\r\n')
-
-        if not body and 'content-length' not in self.headers:
-            wstream.write(b'Content-Length: 0\r\n')
-
-        if body and self.chunk_size and "transfer-encoding" not in self.headers:
-            wstream.write(b'Transfer-encoding: chunked\r\n')
-
-        writers = []
-        if self.chunk_size:
-            writers.append(ChunkedWriter(self.chunk_size))
-        if self.compress:
-            wstream.write(
-                str_to_bytes('Content-encoding: %s\r\n' % self.compress))
-            writers.append(DeflateWriter(self.compress))
-
         wstream.write(b'\r\n')
 
         if body:
-            if self.chunk_size:
-                wstream.write_body(body, writers, True)
-                wstream.write_chunked_eof()
-            else:
-                wstream.write(body)
+            wstream.write_body(body, self.writers, self.chunked)
         else:
             wstream.write(b'\r\n')
+
+
+def str_to_bytes(s, encoding='utf-8'):
+    if isinstance(s, bytes):
+        return s
+    return s.encode(encoding)
+
+
+def encode_multipart_formdata(fields, encoding='utf-8'):
+    """
+    Encode a list of fields using the multipart/form-data MIME format.
+
+    fields:
+        List of (name, value) or (name, key, value) or
+        (name, key, value, MIME type) field tuples.
+    """
+    body = io.BytesIO()
+    boundary = bytes(uuid.uuid4().hex, 'latin1')
+
+    for rec in fields:
+        body.write(b'--' + boundary + b'\r\n')
+
+        field, *rec = rec
+
+        if len(rec) == 1:
+            data = rec[0]
+            body.write(
+                (('Content-Disposition: form-data; name="%s"\r\n\r\n' %
+                  (field,)).encode(encoding)))
+        else:
+            if len(rec) == 3:
+                filename, data, content_type = rec
+            else:
+                filename, data = rec
+                content_type = (mimetypes.guess_type(filename)[0] or
+                                'application/octet-stream')
+            body.write(
+                ('Content-Disposition: form-data; name="%s"; '
+                 'filename="%s"\r\n' % (field, filename)).encode(encoding))
+            body.write(
+                ('Content-Type: %s\r\n\r\n' % (content_type,)).encode(encoding))
+
+        body.write(str_to_bytes(data))
+        body.write(b'\r\n')
+
+    body.write(b'--' + boundary + b'--\r\n')
+    return body.getvalue(), 'multipart/form-data; boundary=%s'%boundary.decode()

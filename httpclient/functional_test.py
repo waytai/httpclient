@@ -91,12 +91,23 @@ class FunctionalTests(unittest.TestCase):
         self.assertEqual({'some': ['data']}, content['form'])
         self.assertEqual(r.status, 200)
 
+    def test_POST_DATA_DEFLATE(self):
+        url = self.server.url('method', 'post')
+        r = self.event_loop.run_until_complete(tasks.Task(
+            api.request('post', url, data={'some': 'data'}, compress=True)))
+        self.assertEqual(r.status, 200)
+
+        content = r.read(True)
+        self.assertEqual('deflate', content['compression'])
+        self.assertEqual({'some': ['data']}, content['form'])
+        self.assertEqual(r.status, 200)
+
     def test_POST_FILES(self):
         url = self.server.url('method', 'post')
 
         with open(__file__) as f:
             r = self.event_loop.run_until_complete(tasks.Task(
-                api.request('post', url, files={'some': f}, chunk_size=1024)))
+                api.request('post', url, files={'some': f}, chunked=1024)))
 
             content = r.read(True)
 
@@ -118,7 +129,7 @@ class FunctionalTests(unittest.TestCase):
         with open(__file__) as f:
             r = self.event_loop.run_until_complete(tasks.Task(
                 api.request('post', url, files={'some': f},
-                            chunk_size=1024, compress='deflate')))
+                            chunked=1024, compress='deflate')))
 
             content = r.read(True)
 
@@ -253,6 +264,48 @@ class FunctionalTests(unittest.TestCase):
             api.request('get', self.server.url('encoding', 'gzip'))))
         self.assertEqual(r.status, 200)
 
+    def test_chunked(self):
+        r = self.event_loop.run_until_complete(tasks.Task(
+            api.request('get', self.server.url('chunked'))))
+        self.assertEqual(r.status, 200)
+        self.assertEqual(r.headers['Transfer-Encoding'], 'chunked')
+        content = r.read(True)
+        self.assertEqual(content['path'], '/chunked')
+
+    def test_timeout(self):
+        self.server.noresponse = True
+        self.assertRaises(
+            tulip.futures.TimeoutError,
+            self.event_loop.run_until_complete,
+            tasks.Task(
+                api.request('get', self.server.url('method', 'get'),
+                            timeout=0.1)))
+
+    def test_request_conn_error(self):
+        self.assertRaises(
+            ValueError,
+            self.event_loop.run_until_complete,
+            tasks.Task(
+                api.request('get', 'http://0.0.0.0:78989', timeout=0.1)))
+
+    def test_stream(self):
+        wstream, response_fut = self.event_loop.run_until_complete(
+            tasks.Task(
+                api.stream('get', self.server.url('method', 'get'))))
+
+        r = self.event_loop.run_until_complete(
+            tasks.Task(response_fut))
+
+        content = r.content.decode()
+        self.assertEqual(r.status, 200)
+        self.assertIn('"method": "GET"', content)
+
+    def test_stream_conn_error(self):
+        self.assertRaises(
+            ValueError,
+            self.event_loop.run_until_complete,
+            tasks.Task(api.stream('get', 'http://0.0.0.0:78989', timeout=0.1)))
+
 
 class HttpClientFunctional(Router):
 
@@ -284,3 +337,10 @@ class HttpClientFunctional(Router):
             200,
             headers={'Content-encoding': mode},
             writers=[protocol.DeflateWriter(mode)])
+
+    @Router.define('/chunked$')
+    def chunked(self, match):
+        self._response(
+            200,
+            headers={'Transfer-encoding': 'chunked'},
+            writers=[protocol.ChunkedWriter(100)], chunked=True)

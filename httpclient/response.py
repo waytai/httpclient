@@ -25,7 +25,7 @@ class HttpResponse:
         self.method = method
         self.url = url
 
-    def __str__(self):
+    def __repr__(self):
         out = io.StringIO()
         print('<HttpResponse [%s %s]>' % (self.status, self.reason), file=out)
         print(self.headers, file=out)

@@ -34,3 +34,16 @@ class ResponseTests(unittest.TestCase):
         self.assertFalse(self.response.isclosed())
         self.response.close()
         self.assertTrue(self.response.isclosed())
+
+    def test_repr(self):
+        self.response.status = 200
+        self.response.reason = 'Ok'
+        self.assertIn('<HttpResponse [200 Ok]>', repr(self.response))
+
+    def test_start_start(self):
+        self.response.stream = self.stream
+
+        self.assertRaises(
+            RuntimeError,
+            self.ev.run_until_complete,
+            tulip.Task(self.response.start(self.stream)))

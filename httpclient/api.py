@@ -17,7 +17,7 @@ def request(method, url, *,
             params=None, data=None, headers=None, cookies=None,
             files=None, auth=None, allow_redirects=True, max_redirects=25,
             encoding='utf-8', version='1.1', timeout=None,
-            compress=None, chunk_size=None):
+            compress=None, chunked=None):
     """Constructs and sends a request. Returns response object
 
     method: http method
@@ -57,25 +57,26 @@ def request(method, url, *,
         request = HttpRequest(
             method, url, params=params, headers=headers, data=data,
             cookies=cookies, files=files, auth=auth, encoding=encoding,
-            version=version, compress=compress, chunk_size=chunk_size)
+            version=version, compress=compress, chunked=chunked)
         response = HttpResponse(request.method, request.path)
 
         conn = event_loop.create_connection(
             factory, request.host, request.port, ssl=request.ssl)
 
-        try:
-            done, pending = yield from tasks.wait([conn], timeout)
-        except:
-            raise ValueError()
-        else:
-            if done:
-                transport, protocol = done.pop().result()
+        # connection timeout
+        done, pending = yield from tasks.wait(
+            [start(conn, request, response, timeout)], timeout)
+        if done:
+            t = done.pop()
+            exc = t.exception()
+            if exc:
+                raise ValueError(exc)
             else:
-                raise futures.TimeoutError
+                transport, protocol = t.result()
+        else:
+            raise futures.TimeoutError
 
-        request.start(protocol.wstream)
-        yield from response.start(protocol.rstream)
-
+        # redirects
         if response.status in (301, 302) and allow_redirects:
             redirects += 1
             if max_redirects and redirects >= max_redirects:
@@ -99,6 +100,16 @@ def request(method, url, *,
     return response
 
 
+@tasks.task
+def start(conn, request, response, timeout):
+    transport, protocol = yield from conn
+
+    request.start(protocol.wstream)
+    yield from response.start(protocol.rstream)
+
+    return transport, protocol
+
+
 @tasks.coroutine
 def stream(method, url, *,
            params=None, headers=None, cookies=None,
@@ -120,15 +131,16 @@ def stream(method, url, *,
     conn = event_loop.create_connection(
         factory, request.host, request.port, ssl=request.ssl)
 
-    try:
-        done, pending = yield from tasks.wait([conn], timeout)
-    except:
-        raise ValueError()
-    else:
-        if done:
-            transport, protocol = done.pop().result()
+    done, pending = yield from tasks.wait([conn], timeout)
+    if done:
+        t = done.pop()
+        exc = t.exception()
+        if exc:
+            raise ValueError(exc)
         else:
-            raise futures.TimeoutError
+            transport, protocol = t.result()
+    else:
+        raise futures.TimeoutError
 
     request.start(protocol.wstream)
 

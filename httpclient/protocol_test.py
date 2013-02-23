@@ -318,7 +318,7 @@ class HttpStreamWriterTests(unittest.TestCase):
 
         write.reset_mock()
         self.writer.write_body(
-            (b'data1', b'data2',), 
+            (b'data1', b'data2',),
             [protocol.ChunkedWriter(2), protocol.DeflateWriter()], True)
         self.assertTrue(5, write.call_count)
 

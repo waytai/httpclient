@@ -229,6 +229,7 @@ class HttpStreamWriter:
         if chunked:
             for chunk in data:
                 self.write_chunked(chunk)
+            self.write_chunked_eof()
         else:
             for chunk in data:
                 self.write(chunk)

@@ -4,6 +4,7 @@
 import unittest
 import urllib.parse
 
+from . import protocol
 from .request import HttpRequest
 
 
@@ -50,6 +51,11 @@ class HttpRequestTests(unittest.TestCase):
         req = HttpRequest('get', 'http://python.org')
         self.assertEqual('/', req.path)
 
+    def test_content_encoding(self):
+        req = HttpRequest('get', 'http://python.org', auth=('nkim', '1234'))
+        self.assertIn('Authorization', req.headers)
+        self.assertEqual('Basic bmtpbToxMjM0', req.headers['Authorization'])
+
     def test_basic_auth(self):
         req = HttpRequest('get', 'http://python.org', auth=('nkim', '1234'))
         self.assertIn('Authorization', req.headers)
@@ -66,10 +72,10 @@ class HttpRequestTests(unittest.TestCase):
 
     def test_no_content_length(self):
         req = HttpRequest('get', 'http://python.org')
-        self.assertNotIn('Content-Length', req.headers)
+        self.assertEqual(0, req.headers.get('Content-Length'))
 
         req = HttpRequest('head', 'http://python.org')
-        self.assertNotIn('Content-Length', req.headers)
+        self.assertEqual(0, req.headers.get('Content-Length'))
 
     def test_path_is_not_double_encoded(self):
         req = HttpRequest('get', "http://0.0.0.0/get/test case")
@@ -138,6 +144,52 @@ class HttpRequestTests(unittest.TestCase):
         for meth in HttpRequest.GET_METHODS:
             req = HttpRequest(meth, 'http://python.org/', data={'life': '42'})
             self.assertEqual('/?life=42', req.path)
+
+    def test_content_encoding(self):
+        req = HttpRequest('get', 'http://python.org/', compress='deflate')
+        self.assertTrue(req.chunked)
+        self.assertEqual(req.headers['Content-Encoding'], 'deflate')
+        self.assertIsInstance(req.writers[-1], protocol.DeflateWriter)
+
+    def test_content_encoding_header(self):
+        req = HttpRequest('get', 'http://python.org/',
+                          headers={'Content-Encoding': 'deflate'})
+        self.assertTrue(req.chunked)
+        self.assertIsInstance(req.writers[-1], protocol.DeflateWriter)
+
+    def test_chunked(self):
+        req = HttpRequest(
+            'get', 'http://python.org/',
+            headers={'Transfer-encoding':'gzip'})
+        self.assertFalse(req.chunked)
+
+        req = HttpRequest(
+            'get', 'http://python.org/',
+            headers={'Transfer-encoding':'chunked'})
+        self.assertTrue(req.chunked)
+
+        self.assertIsInstance(req.writers[0], protocol.ChunkedWriter)
+
+    def test_chunked_explicit(self):
+        req = HttpRequest(
+            'get', 'http://python.org/', chunked=True)
+        self.assertTrue(req.chunked)
+        self.assertEqual('chunked', req.headers['Transfer-encoding'])
+        self.assertEqual(req.writers[0].chunk_size, 8196)
+
+    def test_chunked_explicit_size(self):
+        req = HttpRequest(
+            'get', 'http://python.org/', chunked=1024)
+        self.assertTrue(req.chunked)
+        self.assertEqual('chunked', req.headers['Transfer-encoding'])
+        self.assertEqual(req.writers[0].chunk_size, 1024)
+
+    def test_chunked_length(self):
+        req = HttpRequest(
+            'get', 'http://python.org/',
+            headers={'Content-Length':'1000'}, chunked=1024)
+        self.assertTrue(req.chunked)
+        self.assertNotIn('Content-Length', req.headers)
 
 
 if __name__ == '__main__':
