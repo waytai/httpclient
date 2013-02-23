@@ -87,7 +87,7 @@ class FunctionalTests(unittest.TestCase):
             api.request('post', url, data={'some': 'data'})))
         self.assertEqual(r.status, 200)
 
-        content = r.read(True)
+        content = self.event_loop.run_until_complete(tasks.Task(r.read(True)))
         self.assertEqual({'some': ['data']}, content['form'])
         self.assertEqual(r.status, 200)
 
@@ -97,7 +97,7 @@ class FunctionalTests(unittest.TestCase):
             api.request('post', url, data={'some': 'data'}, compress=True)))
         self.assertEqual(r.status, 200)
 
-        content = r.read(True)
+        content = self.event_loop.run_until_complete(tasks.Task(r.read(True)))
         self.assertEqual('deflate', content['compression'])
         self.assertEqual({'some': ['data']}, content['form'])
         self.assertEqual(r.status, 200)
@@ -109,7 +109,8 @@ class FunctionalTests(unittest.TestCase):
             r = self.event_loop.run_until_complete(tasks.Task(
                 api.request('post', url, files={'some': f}, chunked=1024)))
 
-            content = r.read(True)
+            content = self.event_loop.run_until_complete(
+                tasks.Task(r.read(True)))
 
             f.seek(0)
             filename = os.path.split(f.name)[-1]
@@ -131,7 +132,8 @@ class FunctionalTests(unittest.TestCase):
                 api.request('post', url, files={'some': f},
                             chunked=1024, compress='deflate')))
 
-            content = r.read(True)
+            content = self.event_loop.run_until_complete(
+                tasks.Task(r.read(True)))
 
             f.seek(0)
             filename = os.path.split(f.name)[-1]
@@ -153,7 +155,8 @@ class FunctionalTests(unittest.TestCase):
             r = self.event_loop.run_until_complete(tasks.Task(
                 api.request('post', url, files=[('some', f)])))
 
-            content = r.read(True)
+            content = self.event_loop.run_until_complete(
+                tasks.Task(r.read(True)))
 
             f.seek(0)
             filename = os.path.split(f.name)[-1]
@@ -174,7 +177,8 @@ class FunctionalTests(unittest.TestCase):
             r = self.event_loop.run_until_complete(tasks.Task(
                 api.request('post', url, files=[('some', f, 'text/plain')])))
 
-            content = r.read(True)
+            content = self.event_loop.run_until_complete(
+                tasks.Task(r.read(True)))
 
             f.seek(0)
             filename = os.path.split(f.name)[-1]
@@ -197,7 +201,8 @@ class FunctionalTests(unittest.TestCase):
             r = self.event_loop.run_until_complete(tasks.Task(
                 api.request('post', url, files=[f])))
 
-            content = r.read(True)
+            content = self.event_loop.run_until_complete(
+                tasks.Task(r.read(True)))
 
             f.seek(0)
             filename = os.path.split(f.name)[-1]
@@ -219,7 +224,8 @@ class FunctionalTests(unittest.TestCase):
         r = self.event_loop.run_until_complete(tasks.Task(
             api.request('post', url, files=[data])))
 
-        content = r.read(True)
+        content = self.event_loop.run_until_complete(
+            tasks.Task(r.read(True)))
 
         self.assertEqual(1, len(content['multipart-data']))
         self.assertEqual(
@@ -237,7 +243,8 @@ class FunctionalTests(unittest.TestCase):
                 api.request('post', url,
                             data={'test': 'true'}, files={'some': f})))
 
-            content = r.read(True)
+            content = self.event_loop.run_until_complete(
+                tasks.Task(r.read(True)))
 
             self.assertEqual(2, len(content['multipart-data']))
             self.assertEqual(
@@ -269,7 +276,7 @@ class FunctionalTests(unittest.TestCase):
             api.request('get', self.server.url('chunked'))))
         self.assertEqual(r.status, 200)
         self.assertEqual(r.headers['Transfer-Encoding'], 'chunked')
-        content = r.read(True)
+        content = self.event_loop.run_until_complete(tasks.Task(r.read(True)))
         self.assertEqual(content['path'], '/chunked')
 
     def test_timeout(self):
@@ -296,7 +303,9 @@ class FunctionalTests(unittest.TestCase):
         r = self.event_loop.run_until_complete(
             tasks.Task(response_fut))
 
-        content = r.content.decode()
+        content = self.event_loop.run_until_complete(tasks.Task(r.read()))
+        content = content.decode()
+
         self.assertEqual(r.status, 200)
         self.assertIn('"method": "GET"', content)
 

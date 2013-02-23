@@ -73,8 +73,7 @@ class Crawler:
             if response.status == 200:
                 ctype = response.headers.get_content_type()
                 if ctype == 'text/html':
-                    data = yield from response.read()
-                    data = data.decode('utf-8', 'replace')
+                    data = response.content.decode('utf-8', 'replace')
                     urls = re.findall(r'(?i)href=["\']?([^\s"\'<>]+)', data)
                     self.addurls([(u, url) for u in urls])
 

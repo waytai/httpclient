@@ -105,7 +105,7 @@ def start(conn, request, response, timeout):
     transport, protocol = yield from conn
 
     request.start(protocol.wstream)
-    yield from response.start(protocol.rstream)
+    yield from response.start(protocol.rstream, True)
 
     return transport, protocol
 

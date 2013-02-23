@@ -229,6 +229,7 @@ class WebSocketProto:
                 if self._closed:
                     return
                 raise
+
             if frame is None:
                 if result:
                     raise WebSocketError('Peer closed connection unexpectedly')
@@ -251,8 +252,7 @@ class WebSocketProto:
 
             elif f_opcode == self.OPCODE_CLOSE:
                 if len(f_payload) >= 2:
-                    self.close_code = struct.unpack(
-                        '!H', str(f_payload[:2]))[0]
+                    self.close_code = struct.unpack('!H', f_payload[:2])[0]
                     self.close_message = f_payload[2:]
                 elif f_payload:
                     raise WebSocketError(

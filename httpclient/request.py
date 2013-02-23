@@ -207,7 +207,7 @@ class HttpRequest:
                 self.headers['content-type'] = content_type
 
         # chunked
-        te =  self.headers.get('transfer-encoding', '').lower()
+        te = self.headers.get('transfer-encoding', '').lower()
 
         if chunked:
             self.chunked = True

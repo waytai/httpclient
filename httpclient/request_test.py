@@ -160,12 +160,12 @@ class HttpRequestTests(unittest.TestCase):
     def test_chunked(self):
         req = HttpRequest(
             'get', 'http://python.org/',
-            headers={'Transfer-encoding':'gzip'})
+            headers={'Transfer-encoding': 'gzip'})
         self.assertFalse(req.chunked)
 
         req = HttpRequest(
             'get', 'http://python.org/',
-            headers={'Transfer-encoding':'chunked'})
+            headers={'Transfer-encoding': 'chunked'})
         self.assertTrue(req.chunked)
 
         self.assertIsInstance(req.writers[0], protocol.ChunkedWriter)
@@ -187,7 +187,7 @@ class HttpRequestTests(unittest.TestCase):
     def test_chunked_length(self):
         req = HttpRequest(
             'get', 'http://python.org/',
-            headers={'Content-Length':'1000'}, chunked=1024)
+            headers={'Content-Length': '1000'}, chunked=1024)
         self.assertTrue(req.chunked)
         self.assertNotIn('Content-Length', req.headers)
 

@@ -19,6 +19,7 @@ class HttpResponse:
     status = None  # Status-Code
     reason = None  # Reason-Phrase
 
+    content = None
     will_close = None  # conn will close at end of response
 
     def __init__(self, method, url):
@@ -31,7 +32,7 @@ class HttpResponse:
         print(self.headers, file=out)
         return out.getvalue()
 
-    def start(self, stream):
+    def start(self, stream, readbody=False):
         if self.stream is not None:
             raise RuntimeError('Response is in process.')
 
@@ -92,13 +93,14 @@ class HttpResponse:
 
         # body
         if chunked:
-            body = self.stream.read_body(ChunkedReader(), mode)
+            self.body = self.stream.read_body(ChunkedReader(), mode)
         elif length is not None:
-            body = self.stream.read_body(LengthReader(length), mode)
+            self.body = self.stream.read_body(LengthReader(length), mode)
         else:
-            body = self.stream.read_body(EofReader(), mode)
+            self.body = self.stream.read_body(EofReader(), mode)
 
-        self.content = yield from body
+        if readbody:
+            self.content = yield from self.body
 
         return self
 
@@ -129,6 +131,9 @@ class HttpResponse:
         return self.stream is None
 
     def read(self, decode=False):
+        if self.content is None:
+            self.content = yield from self.body
+
         data = self.content
 
         if decode:
