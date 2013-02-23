@@ -29,19 +29,20 @@ def request(method, url, *,
     headers: (optional) Dictionary of HTTP Headers to send with the request
     cookies: (optional) Dict object to send with the request
     files: (optional) Dictionary of 'name': file-like-objects
-       (or {'name': ('filename', fileobj)}) for multipart encoding upload
+       for multipart encoding upload
     auth: (optional) Auth tuple to enable Basic HTTP Auth
     timeout: (optional) Float describing the timeout of the request
     allow_redirects: (optional) Boolean. Set to True if POST/PUT/DELETE
        redirect following is allowed.
-
-    httpclient.request() does not support chunked request, use
-    httpclient.stream() instead.
+    compress: Boolean. Set to True if request has to be compressed
+       with deflate encoding
+    chunked: Boolean or Integer. Set to chunk size for chunked transfer encoding
 
     Usage:
 
       >>> import httpclient
       >>> req = yield from httpclient.request('GET', 'http://python.org/')
+      >>> req
       <HttpResponse [200]>
 
     """
