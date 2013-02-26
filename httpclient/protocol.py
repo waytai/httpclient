@@ -8,7 +8,7 @@ import re
 import zlib
 from io import BytesIO
 
-from tulip import http_client
+import tulip
 from tulip import tasks
 
 HDRRE = re.compile("[\x00-\x1F\x7F()<>@,;:\[\]={} \t\\\\\"]")
@@ -16,7 +16,7 @@ METHRE = re.compile("([A-Za-z]+)")
 VERSRE = re.compile("HTTP/(\d+).(\d+)")
 
 
-class HttpStreamReader(http_client.StreamReader):
+class HttpStreamReader(tulip.StreamReader):
 
     MAX_HEADERS = 32768
     MAX_HEADERFIELD_SIZE = 8190
