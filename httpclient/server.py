@@ -1,9 +1,20 @@
-"""http server classes."""
+"""http server classes.
+
+TODO: 
+  1. config
+  2. use HTTPException
+  3. url_scheme fix (Response)
+  4. Logging
+  5. Proxy protocol
+  6. x-forward sec
+
+"""
 
 __all__ = ['ServerHttpProtocol', 'WSGIServerHttpProtocol']
 
 import http.server
 import io
+import itertools
 import logging
 import os
 import sys
@@ -26,9 +37,6 @@ class HTTPException(Exception):
 
 
 class ServerHttpProtocol(HttpProtocol):
-
-    # TODO: config
-    # TODO: use HTTPException
 
     debug = False
     handler = None
@@ -288,8 +296,6 @@ class FileWrapper:
 
 class Response:
 
-    # TODO: url_scheme fix
-
     HOP_HEADERS = {
         'connection',
         'keep-alive',
@@ -348,6 +354,8 @@ class Response:
                 not self.status.startswith(('304', '204'))):
             self.chunked = True
 
+        self.send_headers()
+
         return self.write
 
     def process_headers(self, headers):
@@ -385,30 +393,30 @@ class Response:
             connection = "keep-alive"
 
         headers = [
-            "HTTP/{0[0]}.{0[1]} {1}\r\n".format(
-                self.rline.version, self.status),
-            "Server: %s\r\n" % SERVER_SOFTWARE,
-            "Date: %s\r\n" % formatdate(),
-            "Connection: %s\r\n" % connection
+            "HTTP/{0[0]}.{0[1]} {1}\r\n"
+            "Server: {2}\r\n"
+            "Date: {3}\r\n"
+            "Connection: {4}".format(
+                self.rline.version, self.status, 
+                SERVER_SOFTWARE, formatdate(), connection),
         ]
         if self.chunked:
-            headers.append("Transfer-Encoding: chunked\r\n")
+            headers.append("Transfer-Encoding: chunked")
 
         return headers
 
     def send_headers(self):
-        if self.headers_sent:
-            return
+        assert not self.headers_sent
 
-        tosend = self.get_default_headers()
-        tosend.extend(['%s: %s\r\n' % (k, v) for k, v in self.headers])
+        default = self.get_default_headers()
 
-        self.wstream.write_str('%s\r\n' % ''.join(tosend))
+        self.wstream.write_str('%s\r\n\r\n' % '\r\n'.join(
+            itertools.chain(
+                default,
+                ('%s: %s' % (k, v) for k, v in self.headers))))
         self.headers_sent = True
 
     def write(self, arg):
-        self.send_headers()
-
         arglen = len(arg)
         tosend = arglen
         if self.length is not None:
