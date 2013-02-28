@@ -1,10 +1,11 @@
 """test http server."""
 
 import cgi
-import collections
 import email
 import email.parser
+import email.utils
 import http.server
+import http.client
 import json
 import io
 import logging
@@ -15,7 +16,7 @@ import tulip
 import urllib.parse
 import traceback
 
-from . import protocol
+from . import server
 
 
 def str_to_bytes(s):
@@ -36,7 +37,7 @@ class HttpServer:
         self._url = 'http://%s:%s' % (host, port)
 
         def protocol():
-            return HttpServerProtocol(self, router)
+            return TestServerProtocol(self, router)
         self.protocol = protocol
 
     def get(self, name, default=None):
@@ -56,91 +57,26 @@ class HttpServer:
         return self.loop.start_serving(self.protocol, self.host, self.port)
 
 
-class HttpServerProtocol(tulip.Protocol):
+class TestServerProtocol(server.WSGIServerHttpProtocol):
 
     def __init__(self, server, router):
-        super().__init__()
+        super().__init__(router())
 
         self.server = server
-        self.Router = router
-        self.transport = None
-        self.rstream = None
-        self.wstream = None
-        self.handler = None
 
-    def connection_made(self, transport):
-        self.transport = transport
-        self.rstream = protocol.HttpStreamReader(transport)
-        self.wstream = protocol.HttpStreamWriter(transport)
-        self.handler = self.handle_request()
+    def create_wsgi_environ(self, rline, headers, payload):
+        environ = super().create_wsgi_environ(rline, headers, payload)
+        environ['s_params'] = (
+            self.server, self.transport, self.wstream,
+            rline, headers, payload)
 
-    def data_received(self, data):
-        self.rstream.feed_data(data)
+        return environ
 
-    def eof_received(self):
-        self.rstream.feed_eof()
-
-    def connection_lost(self, exc):
-        pass
-
-    @tulip.task
-    def handle_request(self):
-        method, path, version = yield from self.rstream.read_request_status()
-        headers = yield from self.rstream.read_headers()
-
-        # content encoding
-        enc = headers.get('content-encoding', '').lower()
-        if 'gzip' in enc:
-            mode = 'gzip'
-        elif 'deflate' in enc:
-            mode = 'deflate'
-        else:
-            mode = None
-
-        # are we using the chunked-style of transfer encoding?
-        tr_enc = headers.get("transfer-encoding")
-        if tr_enc and tr_enc.lower() == "chunked":
-            chunked = True
-        else:
-            chunked = False
-
-        # length
-        if not chunked and 'content-length' in headers:
-            try:
-                length = int(headers.get("content-length"))
-            except ValueError:
-                raise ValueError("Invalid header: CONTENT-LENGTH")
-            else:
-                if length < 0:
-                    length = None
-        else:
-            length = None
-
-        # body
-        if chunked:
-            body = self.rstream.read_body(protocol.ChunkedReader(), mode)
-        elif length is not None:
-            body = self.rstream.read_body(protocol.LengthReader(length), mode)
-        else:
-            body = self.rstream.read_body(protocol.EofReader(), mode)
-
-        body = yield from body
-
+    def handle_one_request(self, rline, message):
         if self.server.noresponse:
             return
 
-        try:
-            router = self.Router(
-                self.server, self.transport, self.wstream,
-                (method, path, version, mode), headers, body)
-            router.dispatch()
-        except:
-            out = io.StringIO()
-            traceback.print_exc(file=out)
-            traceback.print_exc()
-            router._response(500, out.getvalue())
-
-        self.transport.close()
+        yield from super().handle_one_request(rline, message)
 
 
 class Router:
@@ -148,25 +84,33 @@ class Router:
     _response_version = "HTTP/1.1"
     _responses = http.server.BaseHTTPRequestHandler.responses
 
-    _weekdayname = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-    _monthname = [None,
-                  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    def __call__(self, environ, start_response):
+        self._environ = environ
+        self._start_response = start_response
 
-    def __init__(self, server, transport, stream, status, headers, body):
+        server, transport, stream, rline, headers, body = environ['s_params']
+
+        # headers
+        self._headers = http.client.HTTPMessage()
+        for hdr, val in headers:
+            self._headers[hdr] = val
+
         self._server = server
         self._transport = transport
         self._stream = stream
-        self._method = status[0]
-        self._full_path = status[1]
-        self._version = status[2]
-        self._compression = status[3]
-        self._headers = headers
-        self._body = body
+        self._method = rline.method
+        self._uri = rline.uri
+        self._version = rline.version
+        #self._compression = cmode
+        self._compression = None
+        self._body = body.read()
 
-        url = urllib.parse.urlsplit(self._full_path)
+        url = urllib.parse.urlsplit(self._uri)
         self._path = url.path
         self._query = url.query
+
+        self.dispatch()
+        return []
 
     @staticmethod
     def define(rmatch):
@@ -198,15 +142,23 @@ class Router:
             key = '-'.join(p.capitalize() for p in key.split('-'))
             r_headers[key] = val
 
+        encoding = self._headers.get('content-encoding', '').lower()
+        if 'gzip' in encoding:
+            cmod = 'gzip'
+        elif 'deflate' in encoding:
+            cmod = 'deflate'
+        else:
+            cmod = ''
+
         resp = {
             'method': self._method,
             'version': '%s.%s' % self._version,
-            'path': self._full_path,
+            'path': self._uri,
             'headers': r_headers,
             'origin': self._transport.get_extra_info('addr', ' ')[0],
             'query': self._query,
             'form': {},
-            'compression': self._compression,
+            'compression': cmod,
             'multipart-data': []
         }
         if body:
@@ -243,32 +195,20 @@ class Router:
 
         body = json.dumps(resp, indent=4, sort_keys=True)
 
-        write = self._stream.write
-
-        # write status
-        write(str_to_bytes('%s %s %s\r\n' % (
-            self._response_version, code,
-            self._responses[code][0])))
-
-        # date
-        timestamp = time.time()
-        year, month, day, hh, mm, ss, wd, y, z = time.gmtime(timestamp)
-        date = "%s, %02d %3s %4d %02d:%02d:%02d GMT" % (
-            self._weekdayname[wd],
-            day, self._monthname[month], year, hh, mm, ss)
-
-        write(str_to_bytes('Date: %s\r\n' % date))
-
         # default headers
-        write(b'Connection: close\r\n')
-        write(b'Content-Type: application/json\r\n')
-        write(str_to_bytes('Content-Length: %s\r\n' % len(body)))
+        hdrs = [('Connection', 'close'),
+                ('Content-Type', 'application/json')]
+        if chunked:
+            hdrs.append(('Transfer-Encoding', 'chunked'))
+        else:
+            hdrs.append(('Content-Length', str(len(body))))
 
         # extra headers
         if headers:
-            for hdr, val in headers.items():
-                write(str_to_bytes('%s: %s\r\n' % (hdr, str(val).strip())))
+            hdrs.extend(headers.items())
 
-        write(b'\r\n')
+        # write status
+        write = self._start_response(
+            '%s %s' % (code, self._responses[code][0]), hdrs)
 
-        self._stream.write_body(str_to_bytes(body), writers, chunked)
+        write(str_to_bytes(body))  # writers

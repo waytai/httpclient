@@ -39,81 +39,30 @@ class HttpResponse:
         self.stream = stream
 
         # read status
-        version, self.status, self.reason = (
+        self.version, self.status, self.reason = (
             yield from self.stream.read_response_status())
 
-        if version < (1, 1):
-            self.version = 10
-        else:
-            self.version = 11
-
-        # read headers
-        self.headers = yield from self.stream.read_headers()
-
-        # are we using the chunked-style of transfer encoding?
-        tr_enc = self.headers.get("transfer-encoding")
-        if tr_enc and tr_enc.lower() == "chunked":
-            chunked = True
-        else:
-            chunked = False
-
         # does the body have a fixed length? (of zero)
+        length = None
         if (self.status == http.client.NO_CONTENT or
                 self.status == http.client.NOT_MODIFIED or
                 100 <= self.status < 200 or self.method == "HEAD"):
             length = 0
-        else:
-            if not chunked and "content-length" in self.headers:
-                try:
-                    length = int(self.headers.get("content-length"))
-                except ValueError:
-                    raise ValueError("Invalid header: CONTENT-LENGTH")
-                else:
-                    if length < 0:  # ignore nonsensical negative lengths
-                        length = None
-            else:
-                length = None
 
-        # if the connection remains open, and we aren't using chunked, and
-        # a content-length was not provided, then assume that the connection
-        # WILL close.
-        self.will_close = self._should_close()
-        if (not self.will_close and not chunked and length is None):
-            self.will_close = True
+        # http message
+        message = yield from self.stream.read_message(length=length)
 
-        # content encoding
-        enc = self.headers.get('content-encoding', '').lower()
-        if 'gzip' in enc:
-            mode = 'gzip'
-        elif 'deflate' in enc:
-            mode = 'deflate'
-        else:
-            mode = None
+        # headers
+        self.headers = http.client.HTTPMessage()
+        for hdr, val in message.headers:
+            self.headers[hdr] = val
 
-        # body
-        if chunked:
-            self.body = self.stream.read_body(ChunkedReader(), mode)
-        elif length is not None:
-            self.body = self.stream.read_body(LengthReader(length), mode)
-        else:
-            self.body = self.stream.read_body(EofReader(), mode)
+        self.body = message.payload
 
         if readbody:
-            self.content = yield from self.body
+            self.content = yield from message.payload
 
         return self
-
-    def _should_close(self):
-        if self.version == 11:
-            # An HTTP/1.1 proxy is assumed to stay open unless
-            # explicitly closed.
-            conn = self.headers.get("connection")
-            if conn and "close" in conn.lower():
-                return True
-
-            return False
-
-        return self.version == 10
 
     def close(self):
         if self.stream:

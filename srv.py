@@ -19,7 +19,7 @@ class HttpServer(tulip.Protocol):
 
     @tulip.task
     def handle_request(self):
-        method, path, version = yield from self.reader.read_request_status()
+        method, path, version = yield from self.reader.read_request_line()
         print('method = {!r}; path = {!r}; version = {!r}'.format(
             method, path, version))
 

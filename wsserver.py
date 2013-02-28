@@ -2,40 +2,35 @@
 import signal
 import email.message
 import email.parser
+import http.client
 import os
 import re
 from pprint import pprint
 
 import tulip
-from httpclient import HttpStreamReader
+from httpclient import ServerHttpProtocol
 
 from wsproto import WebSocketProto
 
 
-class HttpServer(tulip.Protocol):
+class HttpServer(ServerHttpProtocol):
 
     _connections = []
 
-    def __init__(self):
-        super().__init__()
-        self.transport = None
-        self.reader = None
-        self.handler = None
+    @tulip.coroutine
+    def handle_one_request(self, rline, message):
+        self.close()
 
-    @tulip.task
-    def handle_request(self):
-        bmethod, bpath, bversion = yield from self.reader.read_request_status()
-        print('method = {!r}; path = {!r}; version = {!r}'.format(
-            bmethod, bpath, bversion))
-
-        headers = yield from self.reader.read_headers()
-        print(headers)
+        # headers
+        headers = http.client.HTTPMessage()
+        for hdr, val in message.headers:
+            headers[hdr] = val
 
         if 'websocket' in headers.get('UPGRADE', '').lower():
             # init ws
             wsclient = WebSocketProto()
             status, headers = wsclient.serve(
-                headers, self.transport, self.reader)
+                headers, self.transport, self.rstream)
 
             write = self.transport.write
             write(b'HTTP/1.1 ' + status.encode())
@@ -57,10 +52,12 @@ class HttpServer(tulip.Protocol):
                             break
 
                         data = data.strip()
+                        print(data)
                         for wsc in self._connections:
                             if wsc is not wsclient:
                                 wsc.send(data.encode())
 
+                print('Someone joined.')
                 for wsc in self._connections:
                     wsc.send(b'Someone joined.')
 
@@ -71,6 +68,7 @@ class HttpServer(tulip.Protocol):
                 assert not pending
                 self._connections.remove(wsclient)
 
+                print('Someone disconnected.')
                 for wsc in self._connections:
                     wsc.send(b'Someone disconnected.')
         else:
@@ -79,27 +77,6 @@ class HttpServer(tulip.Protocol):
             write(b'Content-type: text/html\r\n')
             write(b'\r\n')
             write(WS_SRV_HTML)
-
-        self.transport.close()
-
-    def connection_made(self, transport):
-        self.transport = transport
-        print('connection made', transport, transport.get_extra_info('socket'))
-        self.reader = HttpStreamReader(transport)
-        self.handler = self.handle_request()
-
-    def data_received(self, data):
-        self.reader.feed_data(data)
-
-    def eof_received(self):
-        self.reader.feed_eof()
-
-    def connection_lost(self, exc):
-        print('connection lost', exc)
-        if (self.handler.done() and
-                not self.handler.cancelled() and
-                self.handler.exception() is not None):
-            print('handler exception:', self.handler.exception())
 
 
 def main():

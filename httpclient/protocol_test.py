@@ -31,39 +31,39 @@ class HttpStreamReaderTests(unittest.TestCase):
         self.stream.close()
         self.assertTrue(self.transport.close.called)
 
-    def test_request_status(self):
+    def test_request_line(self):
         self.stream.feed_data(b'get /path HTTP/1.1\r\n')
         self.assertEqual(
             ('GET', '/path', (1, 1)),
             self.ev.run_until_complete(
-                tulip.Task(self.stream.read_request_status())))
+                tulip.Task(self.stream.read_request_line())))
 
         self.stream.feed_data(b'get //path HTTP/1.1\r\n')
         self.assertEqual(
             ('GET', '/path', (1, 1)),
             self.ev.run_until_complete(
-                tulip.Task(self.stream.read_request_status())))
+                tulip.Task(self.stream.read_request_line())))
 
-    def test_request_status_bad_status_line(self):
+    def test_request_line_bad_status_line(self):
         self.stream.feed_data(b'\r\n')
         self.assertRaises(
             http.client.BadStatusLine,
             self.ev.run_until_complete,
-            tulip.Task(self.stream.read_request_status()))
+            tulip.Task(self.stream.read_request_line()))
 
-    def test_request_status_bad_method(self):
+    def test_request_line_bad_method(self):
         self.stream.feed_data(b'12%()+=~$ /get HTTP/1.1\r\n')
         self.assertRaises(
             http.client.BadStatusLine,
             self.ev.run_until_complete,
-            tulip.Task(self.stream.read_request_status()))
+            tulip.Task(self.stream.read_request_line()))
 
-    def test_request_status_bad_version(self):
+    def test_request_line_bad_version(self):
         self.stream.feed_data(b'GET //get HT/11\r\n')
         self.assertRaises(
             http.client.BadStatusLine,
             self.ev.run_until_complete,
-            tulip.Task(self.stream.read_request_status()))
+            tulip.Task(self.stream.read_request_line()))
 
     def test_response_status_bad_status_line(self):
         self.stream.feed_data(b'\r\n')
@@ -117,52 +117,6 @@ class HttpStreamReaderTests(unittest.TestCase):
 
         self.assertIn('HTTP/1.1 ttt test', str(cm.exception))
 
-    def test_parse_headers_invalid_header(self):
-        with self.assertRaises(ValueError) as cm:
-            self.stream._parse_headers(['test line\r\n'])
-
-        self.assertIn("Invalid header 'test line'", str(cm.exception))
-
-    def test_parse_headers_invalid_name(self):
-        with self.assertRaises(ValueError) as cm:
-            self.stream._parse_headers(['test[]: line\r\n'])
-
-        self.assertIn("Invalid header name 'TEST[]'", str(cm.exception))
-
-    def test_parse_headers_headers_size(self):
-        self.stream.MAX_HEADERFIELD_SIZE = 5
-
-        with self.assertRaises(http.client.LineTooLong) as cm:
-            self.stream._parse_headers(['test: line data data\r\n'])
-
-        self.assertIn("limit request headers fields size", str(cm.exception))
-
-    def test_parse_headers_continuation_headers_size(self):
-        self.stream.MAX_HEADERFIELD_SIZE = 5
-
-        with self.assertRaises(http.client.LineTooLong) as cm:
-            self.stream._parse_headers(['test: line\r\n', ' test'])
-
-        self.assertIn("limit request headers fields size", str(cm.exception))
-
-    def test_parse_headers_max_size(self):
-        self.stream.MAX_HEADERS = 5
-
-        with self.assertRaises(http.client.LineTooLong) as cm:
-            self.stream._parse_headers(
-                ['test: line\r\n', 'test2: data\r\n'])
-
-        self.assertIn("limit request headers fields", str(cm.exception))
-
-    def test_parse_headers(self):
-        headers = self.stream._parse_headers(
-            ['test: line\r\n', 'test2: data\r\n'])
-        self.assertEqual([('TEST', 'line'), ('TEST2', 'data')], headers)
-
-    def test_parse_headers_continuation(self):
-        headers = self.stream._parse_headers(['test: line\r\n', ' test'])
-        self.assertEqual([('TEST', 'line\r\n test')], headers)
-
     def test_read_headers(self):
         self.stream.feed_data(b'test: line\r\n')
         self.stream.feed_data(b' continue\r\n')
@@ -171,9 +125,8 @@ class HttpStreamReaderTests(unittest.TestCase):
 
         headers = self.ev.run_until_complete(
             tulip.Task(self.stream.read_headers()))
-        self.assertIsInstance(headers, http.client.HTTPMessage)
-        self.assertEqual(headers['TEST'], 'line\r\n continue')
-        self.assertEqual(headers['TEST2'], 'data')
+        self.assertEqual(headers,
+                         [('TEST', 'line\r\n continue'), ('TEST2', 'data')])
 
     def test_read_headers_size(self):
         self.stream.feed_data(b'test: line\r\n')
@@ -187,49 +140,87 @@ class HttpStreamReaderTests(unittest.TestCase):
             self.ev.run_until_complete,
             tulip.Task(self.stream.read_headers()))
 
-    def test_read_body_unknown_mode(self):
+    def test_read_headers_invalid_header(self):
+        self.stream.feed_data(b'test line\r\n')
+
+        with self.assertRaises(ValueError) as cm:
+            self.ev.run_until_complete(
+                tulip.Task(self.stream.read_headers()))
+
+        self.assertIn("Invalid header b'test line'", str(cm.exception))
+
+    def test_read_headers_invalid_name(self):
+        self.stream.feed_data(b'test[]: line\r\n')
+
+        with self.assertRaises(ValueError) as cm:
+            self.ev.run_until_complete(
+                tulip.Task(self.stream.read_headers()))
+
+        self.assertIn("Invalid header name b'TEST[]'", str(cm.exception))
+
+    def test_read_headers_headers_size(self):
+        self.stream.MAX_HEADERFIELD_SIZE = 5
+        self.stream.feed_data(b'test: line data data\r\ndata\r\n')
+
+        with self.assertRaises(http.client.LineTooLong) as cm:
+            self.ev.run_until_complete(
+                tulip.Task(self.stream.read_headers()))
+
+        self.assertIn("limit request headers fields size", str(cm.exception))
+
+    def test_read_headers_continuation_headers_size(self):
+        self.stream.MAX_HEADERFIELD_SIZE = 5
+        self.stream.feed_data(b'test: line\r\n test\r\n')
+
+        with self.assertRaises(http.client.LineTooLong) as cm:
+            self.ev.run_until_complete(
+                tulip.Task(self.stream.read_headers()))
+
+        self.assertIn("limit request headers fields size", str(cm.exception))
+
+    def test_read_payload_unknown_mode(self):
         self.assertRaises(
             ValueError, self.ev.run_until_complete,
-            tulip.Task(self.stream.read_body(self.reader, 'unknown')))
+            tulip.Task(self.stream.read_payload(self.reader, 'unknown')))
 
-    def test_read_body(self):
+    def test_read_payload(self):
         self.stream.feed_data(b'dataline')
 
         data = self.ev.run_until_complete(
-            tulip.Task(self.stream.read_body(self.reader)))
+            tulip.Task(self.stream.read_payload(self.reader)))
         self.assertEqual(b'data', data)
 
         data2 = self.ev.run_until_complete(
-            tulip.Task(self.stream.read_body(self.reader)))
+            tulip.Task(self.stream.read_payload(self.reader)))
         self.assertEqual(b'', data2)
 
-    def test_read_body_gzip(self):
+    def test_read_payload_gzip(self):
         data = gzip.compress(b'data')
         reader = protocol.LengthReader(len(data))
 
         self.stream.feed_data(data)
 
         data = self.ev.run_until_complete(
-            tulip.Task(self.stream.read_body(reader, 'gzip')))
+            tulip.Task(self.stream.read_payload(reader, 'gzip')))
         self.assertEqual(b'data', data)
 
-    def test_read_body_deflate(self):
+    def test_read_payload_deflate(self):
         data = b''.join(protocol.DeflateWriter().write(b'data'))
         reader = protocol.LengthReader(len(data))
 
         self.stream.feed_data(data)
 
         data = self.ev.run_until_complete(
-            tulip.Task(self.stream.read_body(reader, 'deflate')))
+            tulip.Task(self.stream.read_payload(reader, 'deflate')))
         self.assertEqual(b'data', data)
 
-    def test_read_body_compress_error(self):
+    def test_read_payload_compress_error(self):
         data = b'datadatadata'
         reader = protocol.LengthReader(4)
         self.stream.feed_data(data)
 
         data = self.ev.run_until_complete(
-            tulip.Task(self.stream.read_body(reader, 'gzip')))
+            tulip.Task(self.stream.read_payload(reader, 'gzip')))
         self.assertEqual(data[:4], data)
 
 
@@ -436,12 +427,12 @@ class EofReaderTests(unittest.TestCase):
         self.assertEqual(b'', data)
 
 
-class HttpClientProtocolTests(unittest.TestCase):
+class HttpProtocolTests(unittest.TestCase):
 
     def test_protocol(self):
         transport = unittest.mock.Mock()
 
-        p = protocol.HttpClientProtocol()
+        p = protocol.HttpProtocol()
         p.connection_made(transport)
         self.assertIs(p.transport, transport)
         self.assertIsInstance(p.rstream, protocol.HttpStreamReader)

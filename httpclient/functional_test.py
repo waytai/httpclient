@@ -46,8 +46,7 @@ class FunctionalTests(unittest.TestCase):
         r = self.event_loop.run_until_complete(
             tasks.Task(
                 api.request('post', self.server.url('redirect', 2),
-                            data={'some': 'data'},
-                        )))
+                            data={'some': 'data'})))
 
         content = r.content.decode()
 

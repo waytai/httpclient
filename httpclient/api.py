@@ -9,7 +9,7 @@ from tulip import tasks
 
 from .request import HttpRequest
 from .response import HttpResponse
-from .protocol import HttpClientProtocol
+from .protocol import HttpProtocol
 
 
 @tasks.coroutine
@@ -48,7 +48,7 @@ def request(method, url, *,
     """
 
     def factory():
-        return HttpClientProtocol(encoding)
+        return HttpProtocol(encoding)
 
     event_loop = events.get_event_loop()
 
@@ -120,7 +120,7 @@ def stream(method, url, *,
 
     """
     def factory():
-        return HttpClientProtocol(encoding)
+        return HttpProtocol(encoding)
 
     event_loop = events.get_event_loop()
 

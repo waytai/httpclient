@@ -3,10 +3,9 @@ import logging
 import os
 import signal
 import sys
-import httpclient
 
 import tulip
-from tulip.http_client import StreamReader
+import httpclient
 
 from wsproto import WebSocketProto
 
@@ -40,7 +39,7 @@ def chat(name, url, wsclient):
     print('Connected.')
 
     # stdin reader
-    stream = StreamReader()
+    stream = tulip.StreamReader()
 
     def cb():
         stream.feed_data(sys.stdin.readline().encode())

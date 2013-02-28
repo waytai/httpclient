@@ -1,22 +1,35 @@
 
-__all__ = ['HttpStreamReader', 'HttpStreamWriter', 'HttpClientProtocol',
+__all__ = ['HttpProtocol', 'HttpMessage',
+           'HttpStreamReader', 'HttpStreamWriter',
            'ChunkedReader', 'LengthReader', 'EofReader',
            'ChunkedWriter', 'DeflateWriter']
 
+import collections
 import http.client
+import logging
 import re
 import zlib
 from io import BytesIO
 
 import tulip
-from tulip import tasks
+import tulip.http
 
-HDRRE = re.compile("[\x00-\x1F\x7F()<>@,;:\[\]={} \t\\\\\"]")
+HDRRE = re.compile(b"[\x00-\x1F\x7F()<>@,;:\[\]={} \t\\\\\"]")
 METHRE = re.compile("([A-Za-z]+)")
 VERSRE = re.compile("HTTP/(\d+).(\d+)")
+CONTINUATION = (b' ', b'\t')
+
+RequestLine = collections.namedtuple(
+    'RequestLine', ['method', 'uri', 'version'])
+
+ResponseStatus = collections.namedtuple(
+    'ResponseStatus', ['version', 'code', 'reason'])
+
+HttpMessage = collections.namedtuple(
+    'HttpMessage', ['headers', 'payload', 'close', 'compression'])
 
 
-class HttpStreamReader(tulip.StreamReader):
+class HttpStreamReader(tulip.http.HttpStreamReader):
 
     MAX_HEADERS = 32768
     MAX_HEADERFIELD_SIZE = 8190
@@ -28,8 +41,20 @@ class HttpStreamReader(tulip.StreamReader):
     def close(self):
         self.transport.close()
 
-    @tasks.coroutine
-    def read_request_status(self):
+    @tulip.coroutine
+    def read_request_line(self):
+        """Read request status line. Exception http.client.BadStatusLine
+        could be raised in case of any errors in status line.
+        Returns three values (method, path, version)
+
+        Example:
+
+            GET /path HTTP/1.1
+
+            >> yield from reader.read_request_line()
+            ('GET', '/path', (1, 1))
+
+        """
         line = str((yield from self.readline()), 'latin1').strip()
 
         try:
@@ -52,10 +77,22 @@ class HttpStreamReader(tulip.StreamReader):
             raise http.client.BadStatusLine(version)
         version = (int(match.group(1)), int(match.group(2)))
 
-        return method, uri, version
+        return RequestLine(method, uri, version)
 
-    @tasks.coroutine
+    @tulip.coroutine
     def read_response_status(self):
+        """Read response status line. Exception http.client.BadStatusLine
+        could be raised in case of any errors in status line.
+        Returns three values (version, status_code, reason)
+
+        Example:
+
+            HTTP/1.1 200 Ok
+
+            >> yield from reader.read_response_status()
+            ((1, 1), 200, 'Ok')
+
+        """
         line = str((yield from self.readline()), 'latin1').strip()
         if not line:
             # Presumably, the server closed the connection before
@@ -85,75 +122,64 @@ class HttpStreamReader(tulip.StreamReader):
         except ValueError:
             raise http.client.BadStatusLine(line)
 
-        return version, status, reason.strip()
+        return ResponseStatus(version, status, reason.strip())
 
-    @tasks.coroutine
+    @tulip.coroutine
     def read_headers(self):
-        """Read and parses RFC2822 headers from a stream."""
+        """Read and parses RFC2822 headers from a stream. Supports
+        line continuation."""
         size = 0
         headers = []
-        while True:
+
+        line = yield from self.readline()
+
+        while line not in (b'\r\n', b'\n'):
+            header_length = len(line)
+
+            # Parse initial header name : value pair.
+            sep_pos = line.find(b':')
+            if sep_pos < 0:
+                raise ValueError('Invalid header %s' % line.strip())
+
+            name, value = line[:sep_pos], line[sep_pos+1:]
+            name = name.rstrip(b' \t').upper()
+            if HDRRE.search(name):
+                raise ValueError('Invalid header name %s' % name)
+
+            name, value = name.strip().decode('latin1'), [value.lstrip()]
+
+            # next line
             line = yield from self.readline()
-            if line in (b'\r\n', b'\n', b''):
-                break
 
-            size += len(line)
-            if size > self.MAX_HEADERS:
-                raise http.client.LineTooLong("max buffer headers")
+            # consume continuation lines
+            continuation = line.startswith(CONTINUATION)
 
-            headers.append(str(line, 'latin1'))
+            if continuation:
+                while continuation:
+                    header_length += len(line)
+                    if header_length > self.MAX_HEADERFIELD_SIZE:
+                        raise http.client.LineTooLong(
+                            "limit request headers fields size")
+                    value.append(line)
 
-        message = http.client.HTTPMessage()
-        for name, value in self._parse_headers(headers):
-            message[name] = value
+                    line = yield from self.readline()
+                    continuation = line.startswith(CONTINUATION)
+            else:
+                if header_length > self.MAX_HEADERFIELD_SIZE:
+                    raise http.client.LineTooLong(
+                        "limit request headers fields size")
 
-        return message
-
-    def _parse_headers(self, lines):
-        size = 0
-        headers = []
-
-        # Parse headers into key/value pairs paying attention
-        # to continuation lines.
-        while len(lines):
+            # total headers size
+            size += header_length
             if size >= self.MAX_HEADERS:
                 raise http.client.LineTooLong("limit request headers fields")
 
-            # Parse initial header name : value pair.
-            curr = lines.pop(0)
-            header_length = len(curr)
-            sep_pos = curr.find(":")
-            if sep_pos < 0:
-                raise ValueError('Invalid header %r' % curr.strip())
-
-            name, value = curr[:sep_pos], curr[sep_pos+1:]
-            name = name.rstrip(" \t").upper()
-            if HDRRE.search(name):
-                raise ValueError('Invalid header name %r' % name)
-
-            name, value = name.strip(), [value.lstrip()]
-
-            # Consume value continuation lines
-            while len(lines) and lines[0].startswith((" ", "\t")):
-                curr = lines.pop(0)
-                header_length += len(curr)
-                if header_length > self.MAX_HEADERFIELD_SIZE > 0:
-                    raise http.client.LineTooLong(
-                        "limit request headers fields size")
-                value.append(curr)
-
-            value = ''.join(value).rstrip()
-
-            if header_length > self.MAX_HEADERFIELD_SIZE > 0:
-                raise http.client.LineTooLong(
-                    "limit request headers fields size")
-
-            size += len(curr)
-            headers.append((name, value))
+            headers.append((name, b''.join(value).rstrip().decode('latin1')))
 
         return headers
 
-    def read_body(self, reader, encoding=None):
+    @tulip.coroutine
+    def read_payload(self, reader, encoding=None):
         if encoding is not None:
             if encoding not in ('gzip', 'deflate'):
                 raise ValueError(
@@ -184,6 +210,63 @@ class HttpStreamReader(tulip.StreamReader):
             buf.write(chunk)
 
         return buf.getvalue()
+
+    @tulip.coroutine
+    def read_message(self, version=(1, 1),
+                     length=None, compression=True, readall=True):
+        # load headers
+        headers = yield from self.read_headers()
+
+        # payload params
+        chunked = False
+        content_length = length
+        cmode = None
+        close_conn = None
+
+        for (name, value) in headers:
+            if name == 'CONTENT-LENGTH':
+                content_length = value
+            elif name == 'TRANSFER-ENCODING':
+                chunked = 'chunked' in value.lower()
+            elif name == 'SEC-WEBSOCKET-KEY1':
+                content_length = 8
+            elif name == "CONNECTION":
+                v = value.lower()
+                if v == "close":
+                    close_conn = True
+                elif v == "keep-alive":
+                    close_conn = False
+            elif name == 'CONTENT-ENCODING' and compression:
+                enc = value.lower()
+                if 'gzip' in enc:
+                    cmode = 'gzip'
+                elif 'deflate' in enc:
+                    cmode = 'deflate'
+
+        if close_conn is None:
+            close_conn = version <= (1, 0)
+
+        # payload
+        if chunked:
+            payload = self.read_payload(ChunkedReader(), cmode)
+
+        elif content_length is not None:
+            try:
+                content_length = int(content_length)
+            except ValueError:
+                raise ValueError('CONTENT-LENGTH')
+
+            if content_length < 0:
+                raise ValueError('CONTENT-LENGTH')
+
+            payload = self.read_payload(LengthReader(content_length), cmode)
+        else:
+            if readall:
+                payload = self.read_payload(EofReader(), cmode)
+            else:
+                payload = self.read_payload(LengthReader(0), cmode)
+
+        return HttpMessage(headers, payload, close_conn, cmode)
 
 
 class HttpStreamWriter:
@@ -237,7 +320,7 @@ class HttpStreamWriter:
 
 class ChunkedReader:
 
-    @tasks.coroutine
+    @tulip.coroutine
     def read(self, stream):
         while True:
             try:
@@ -281,7 +364,7 @@ class LengthReader:
     def __init__(self, length):
         self.length = length
 
-    @tasks.coroutine
+    @tulip.coroutine
     def read(self, stream):
         if self.length:
             data = yield from stream.readexactly(self.length)
@@ -294,7 +377,7 @@ class LengthReader:
 
 class EofReader:
 
-    @tasks.coroutine
+    @tulip.coroutine
     def read(self, stream):
         return (yield from stream.read())
 
@@ -346,8 +429,11 @@ class DeflateWriter:
         yield self.zlib.flush()
 
 
-class HttpClientProtocol:
-    """tulip's Protocol class"""
+class HttpProtocol(tulip.Protocol):
+
+    transport = None
+    rstream = None
+    wstream = None
 
     def __init__(self, encoding='utf-8'):
         self.encoding = encoding
