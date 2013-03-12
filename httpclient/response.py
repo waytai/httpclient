@@ -55,8 +55,9 @@ class HttpResponse:
         # headers
         self.headers = http.client.HTTPMessage()
         for hdr, val in message.headers:
-            self.headers[hdr] = val
+            self.headers.add_header(hdr, val)
 
+        # body
         self.body = message.payload
 
         if readbody:

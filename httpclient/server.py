@@ -1,12 +1,14 @@
 """http server classes.
 
 TODO: 
-  1. config
-  2. use HTTPException
-  3. url_scheme fix (Response)
-  4. Logging
-  5. Proxy protocol
-  6. x-forward sec
+  * config
+  * use HTTPException
+  * support EXPECT header
+  * url_scheme fix (Response)
+  * Logging
+  * Proxy protocol
+  * x-forward sec
+  * wsgi file support
 
 """
 
@@ -24,7 +26,7 @@ import traceback
 from email.utils import formatdate
 from urllib.parse import unquote, urlsplit
 
-from .protocol import HttpProtocol
+from . import protocol
 
 SERVER_SOFTWARE = 'tulip/0.0'
 
@@ -36,7 +38,7 @@ class HTTPException(Exception):
         self.message = message
 
 
-class ServerHttpProtocol(HttpProtocol):
+class ServerHttpProtocol(protocol.HttpProtocol):
 
     debug = False
     handler = None
@@ -127,8 +129,6 @@ class ServerHttpProtocol(HttpProtocol):
 
 class WSGIServerHttpProtocol(ServerHttpProtocol):
 
-    # TODO: support EXPECT header
-
     SCRIPT_NAME = os.environ.get('SCRIPT_NAME', '')
 
     def __init__(self, app, *args, **kw):
@@ -139,7 +139,7 @@ class WSGIServerHttpProtocol(ServerHttpProtocol):
     def create_wsgi_response(self, rline, close):
         return Response(rline, close, self.wstream)
 
-    def create_wsgi_environ(self, rline, headers, payload):
+    def create_wsgi_environ(self, rline, message, payload):
         url_scheme = 'http'
         uri_parts = urlsplit(rline.uri)
 
@@ -165,7 +165,7 @@ class WSGIServerHttpProtocol(ServerHttpProtocol):
         forward = self.transport.get_extra_info('addr', '127.0.0.1')
         script_name = self.SCRIPT_NAME
 
-        for hdr_name, hdr_value in headers:
+        for hdr_name, hdr_value in message.headers:
             if hdr_name == 'EXPECT':
                 # handle expect
                 #if hdr_value.lower() == "100-continue":
@@ -235,6 +235,9 @@ class WSGIServerHttpProtocol(ServerHttpProtocol):
         environ['PATH_INFO'] = unquote(path_info)
         environ['SCRIPT_NAME'] = script_name
 
+        environ['tulip.reader'] = self.rstream
+        environ['tulip.writer'] = self.wstream
+
         return environ
 
     @tulip.coroutine
@@ -246,20 +249,16 @@ class WSGIServerHttpProtocol(ServerHttpProtocol):
         try:
             r_start = time.monotonic()
 
-            environ = self.create_wsgi_environ(rline, message.headers, payload)
+            environ = self.create_wsgi_environ(rline, message, payload)
             response = self.create_wsgi_response(rline, message.close)
-
-            environ['tulip.reader'] = self.rstream
-            environ['tulip.writer'] = self.wstream
 
             respiter = self.wsgi(environ, response.start_response)
             if isinstance(respiter, tulip.Future):
                 respiter = yield from respiter
 
             try:
-                # TODO: use resp.write_file
                 for item in respiter:
-                    response.write(item)
+                    response.writer.write(item)
 
                 response.close()
 
@@ -314,11 +313,9 @@ class Response:
         self.status = None
         self.chunked = False
         self.closing = close
-        self.headers = []
-        self.headers_sent = False
         self.length = None
-        self.sent = 0
         self.upgrade = False
+        self.headers = []
 
     def force_close(self):
         self.closing = True
@@ -331,15 +328,14 @@ class Response:
         return True
 
     def start_response(self, status, headers, exc_info=None):
+        assert self.status is None, 'Response headers already set!'
+
         if exc_info:
             try:
-                if self.status and self.headers_sent:
+                if self.status:
                     raise exc_info[1]
             finally:
                 exc_info = None
-
-        elif self.status is not None:
-            raise AssertionError("Response headers already set!")
 
         self.status = status
         self.process_headers(headers)
@@ -353,10 +349,21 @@ class Response:
                 self.rline.version > (1, 0) and
                 not self.status.startswith(('304', '204'))):
             self.chunked = True
+            self.writer = protocol.ChunkedWriter(self.wstream)
 
-        self.send_headers()
+        elif self.length is not None:
+            self.writer = protocol.LengthWriter(self.wstream, self.length)
 
-        return self.write
+        else:
+            self.writer = protocol.EofWriter(self.wstream)
+
+        # send headers
+        self.wstream.write_str('%s\r\n\r\n' % '\r\n'.join(
+            itertools.chain(
+                self.get_default_headers(),
+                ('%s: %s' % (k, v) for k, v in self.headers))))
+
+        return self.writer.write
 
     def process_headers(self, headers):
         for name, value in headers:
@@ -364,19 +371,18 @@ class Response:
 
             name = name.strip()
             lname = name.lower()
-            value = str(value).strip()
 
-            if lname == "content-length":
+            if lname == 'content-length':
                 self.length = int(value)
 
             elif lname in self.HOP_HEADERS:
-                if lname == "connection":
+                if lname == 'connection':
                     # handle websocket
-                    if value.lower() == "upgrade":
+                    if 'upgrade' in value.lower():
                         self.upgrade = True
-                elif lname == "upgrade":
-                    if value.lower() == "websocket":
-                        self.headers.append((name.strip(), value))
+                elif lname == 'upgrade':
+                    if 'websocket' in value.lower():
+                        self.headers.append((name, value))
 
                 # ignore hopbyhop headers
                 continue
@@ -386,66 +392,24 @@ class Response:
     def get_default_headers(self):
         # set the connection header
         if self.upgrade:
-            connection = "upgrade"
+            connection = 'upgrade'
         elif self.should_close():
-            connection = "close"
+            connection = 'close'
         else:
-            connection = "keep-alive"
+            connection = 'keep-alive'
 
         headers = [
-            "HTTP/{0[0]}.{0[1]} {1}\r\n"
-            "Server: {2}\r\n"
-            "Date: {3}\r\n"
-            "Connection: {4}".format(
+            'HTTP/{0[0]}.{0[1]} {1}\r\n'
+            'Server: {2}\r\n'
+            'Date: {3}\r\n'
+            'Connection: {4}'.format(
                 self.rline.version, self.status, 
                 SERVER_SOFTWARE, formatdate(), connection),
         ]
         if self.chunked:
-            headers.append("Transfer-Encoding: chunked")
+            headers.append('Transfer-Encoding: chunked')
 
         return headers
 
-    def send_headers(self):
-        assert not self.headers_sent
-
-        default = self.get_default_headers()
-
-        self.wstream.write_str('%s\r\n\r\n' % '\r\n'.join(
-            itertools.chain(
-                default,
-                ('%s: %s' % (k, v) for k, v in self.headers))))
-        self.headers_sent = True
-
-    def write(self, arg):
-        arglen = len(arg)
-        tosend = arglen
-        if self.length is not None:
-            if self.sent >= self.length:
-                # Never write more than self.response_length bytes
-                return
-
-            tosend = min(self.length - self.sent, tosend)
-            if tosend < arglen:
-                arg = arg[:tosend]
-
-        # Sending an empty chunk signals the end of the
-        # response and prematurely closes the response
-        if self.chunked and tosend == 0:
-            return
-
-        self.sent += tosend
-        if self.chunked:
-            self.wstream.write_chunked(arg)
-        else:
-            self.wstream.write(arg)
-
-    def write_file(self, respiter):
-        for item in respiter:
-            self.write(item)
-
     def close(self):
-        if not self.headers_sent:
-            self.send_headers()
-
-        if self.chunked:
-            self.wstream.write_chunked_eof()
+        self.writer.close()

@@ -2,7 +2,7 @@
 __all__ = ['HttpProtocol', 'HttpMessage',
            'HttpStreamReader', 'HttpStreamWriter',
            'ChunkedReader', 'LengthReader', 'EofReader',
-           'ChunkedWriter', 'DeflateWriter']
+           'ChunkedWriter', 'LengthWriter', 'EofWriter']
 
 import collections
 import http.client
@@ -14,16 +14,6 @@ from io import BytesIO
 import tulip
 import tulip.http
 
-HDRRE = re.compile(b"[\x00-\x1F\x7F()<>@,;:\[\]={} \t\\\\\"]")
-METHRE = re.compile("([A-Za-z]+)")
-VERSRE = re.compile("HTTP/(\d+).(\d+)")
-CONTINUATION = (b' ', b'\t')
-
-RequestLine = collections.namedtuple(
-    'RequestLine', ['method', 'uri', 'version'])
-
-ResponseStatus = collections.namedtuple(
-    'ResponseStatus', ['version', 'code', 'reason'])
 
 HttpMessage = collections.namedtuple(
     'HttpMessage', ['headers', 'payload', 'close', 'compression'])
@@ -40,143 +30,6 @@ class HttpStreamReader(tulip.http.HttpStreamReader):
 
     def close(self):
         self.transport.close()
-
-    @tulip.coroutine
-    def read_request_line(self):
-        """Read request status line. Exception http.client.BadStatusLine
-        could be raised in case of any errors in status line.
-        Returns three values (method, path, version)
-
-        Example:
-
-            GET /path HTTP/1.1
-
-            >> yield from reader.read_request_line()
-            ('GET', '/path', (1, 1))
-
-        """
-        line = str((yield from self.readline()), 'latin1').strip()
-
-        try:
-            method, uri, version = line.split(None, 2)
-        except ValueError:
-            raise http.client.BadStatusLine(line)
-
-        # method
-        if not METHRE.match(method):
-            raise http.client.BadStatusLine(method)
-        method = method.upper()
-
-        # uri, when the path starts with //, considers it as an absolute url
-        if uri.startswith('//'):
-            uri = uri[1:]
-
-        # version
-        match = VERSRE.match(version)
-        if match is None:
-            raise http.client.BadStatusLine(version)
-        version = (int(match.group(1)), int(match.group(2)))
-
-        return RequestLine(method, uri, version)
-
-    @tulip.coroutine
-    def read_response_status(self):
-        """Read response status line. Exception http.client.BadStatusLine
-        could be raised in case of any errors in status line.
-        Returns three values (version, status_code, reason)
-
-        Example:
-
-            HTTP/1.1 200 Ok
-
-            >> yield from reader.read_response_status()
-            ((1, 1), 200, 'Ok')
-
-        """
-        line = str((yield from self.readline()), 'latin1').strip()
-        if not line:
-            # Presumably, the server closed the connection before
-            # sending a valid response.
-            raise http.client.BadStatusLine(line)
-
-        try:
-            version, status, reason = line.split(None, 2)
-        except ValueError:
-            try:
-                version, status = line.split(None, 1)
-                reason = ''
-            except ValueError:
-                version = ''
-
-        # version
-        match = VERSRE.match(version)
-        if match is None:
-            raise http.client.BadStatusLine(line)
-        version = (int(match.group(1)), int(match.group(2)))
-
-        # The status code is a three-digit number
-        try:
-            status = int(status)
-            if status < 100 or status > 999:
-                raise http.client.BadStatusLine(line)
-        except ValueError:
-            raise http.client.BadStatusLine(line)
-
-        return ResponseStatus(version, status, reason.strip())
-
-    @tulip.coroutine
-    def read_headers(self):
-        """Read and parses RFC2822 headers from a stream. Supports
-        line continuation."""
-        size = 0
-        headers = []
-
-        line = yield from self.readline()
-
-        while line not in (b'\r\n', b'\n'):
-            header_length = len(line)
-
-            # Parse initial header name : value pair.
-            sep_pos = line.find(b':')
-            if sep_pos < 0:
-                raise ValueError('Invalid header %s' % line.strip())
-
-            name, value = line[:sep_pos], line[sep_pos+1:]
-            name = name.rstrip(b' \t').upper()
-            if HDRRE.search(name):
-                raise ValueError('Invalid header name %s' % name)
-
-            name, value = name.strip().decode('latin1'), [value.lstrip()]
-
-            # next line
-            line = yield from self.readline()
-
-            # consume continuation lines
-            continuation = line.startswith(CONTINUATION)
-
-            if continuation:
-                while continuation:
-                    header_length += len(line)
-                    if header_length > self.MAX_HEADERFIELD_SIZE:
-                        raise http.client.LineTooLong(
-                            "limit request headers fields size")
-                    value.append(line)
-
-                    line = yield from self.readline()
-                    continuation = line.startswith(CONTINUATION)
-            else:
-                if header_length > self.MAX_HEADERFIELD_SIZE:
-                    raise http.client.LineTooLong(
-                        "limit request headers fields size")
-
-            # total headers size
-            size += header_length
-            if size >= self.MAX_HEADERS:
-                raise http.client.LineTooLong("limit request headers fields")
-
-            headers.append((name, b''.join(value).rstrip().decode('latin1')))
-
-        return headers
 
     @tulip.coroutine
     def read_payload(self, reader, encoding=None):
@@ -302,7 +155,7 @@ class HttpStreamWriter:
     def write_chunked_eof(self):
         self.transport.write(b'0\r\n\r\n')
 
-    def write_body(self, data, writers=None, chunked=False):
+    def write_payload(self, data, writers=None, chunked=False):
         if writers:
             for wrt in writers:
                 data = wrt.write(data)
@@ -383,50 +236,60 @@ class EofReader:
 
 
 class ChunkedWriter:
+    """Send chunked encoded data."""
 
-    def __init__(self, chunk_size=None):
-        self.chunk_size = chunk_size
+    def __init__(self, wstream):
+        self.closed = False
+        self.wstream = wstream
 
-    def write(self, stream):
-        if isinstance(stream, bytes):
-            stream = (stream,)
-        stream = iter(stream)
+    def write(self, data):
+        if not self.closed:
+            if data:
+                self.wstream.write_chunked(data)
+            else:
+                self.close()
 
-        buf = BytesIO()
-        while True:
-            while buf.tell() < self.chunk_size:
-                try:
-                    data = next(stream)
-                    buf.write(data)
-                except StopIteration:
-                    yield buf.getvalue()
-                    return
-
-            data = buf.getvalue()
-            chunk, rest = data[:self.chunk_size], data[self.chunk_size:]
-            buf = BytesIO()
-            buf.write(rest)
-
-            yield chunk
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.wstream.write_chunked_eof()
 
 
-class DeflateWriter:
+class LengthWriter:
+    """Send only 'length' amount of bytes."""
 
-    def __init__(self, encoding='deflate'):
-        zlib_mode = (16 + zlib.MAX_WBITS
-                     if encoding == 'gzip' else -zlib.MAX_WBITS)
+    def __init__(self, wstream, length):
+        self.wstream = wstream
+        self.length = length
 
-        self.zlib = zlib.compressobj(wbits=zlib_mode)
+    def write(self, data):
+        if self.length:
+            l = len(data)
+            if self.length >= l:
+                self.wstream.write(data)
+            else:
+                self.wstream.write(data[:self.length])
+            
+            self.length = max(0, self.length-l)
 
-    def write(self, stream):
-        if isinstance(stream, bytes):
-            stream = (stream,)
-        stream = iter(stream)
+    def close(self):
+        if self.length:
+            self.length = 0
 
-        for chunk in stream:
-            yield self.zlib.compress(chunk)
 
-        yield self.zlib.flush()
+class EofWriter:
+    """Just send all data."""
+
+    def __init__(self, wstream):
+        self.closed = False
+        self.wstream = wstream
+
+    def write(self, data):
+        if not self.closed:
+            self.wstream.write(data)
+
+    def close(self):
+        self.closed = True
 
 
 class HttpProtocol(tulip.Protocol):

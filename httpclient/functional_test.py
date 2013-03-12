@@ -8,7 +8,7 @@ from pprint import pprint
 import tulip
 from tulip import tasks
 
-from . import api, protocol
+from . import api, protocol, utils
 from .test_utils import Router, HttpServer
 
 
@@ -366,7 +366,7 @@ class HttpClientFunctional(Router):
         self._response(
             200,
             headers={'Content-encoding': mode},
-            writers=[protocol.DeflateWriter(mode)])
+            writers=[utils.DeflateIter(mode)])
 
     @Router.define('/chunked$')
     def chunked(self, match):

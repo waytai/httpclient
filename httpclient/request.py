@@ -12,7 +12,7 @@ import os
 import uuid
 import urllib.parse
 
-from .protocol import ChunkedWriter, DeflateWriter
+from .utils import ChunkedIter, DeflateIter
 
 
 class HttpRequest:
@@ -135,13 +135,13 @@ class HttpRequest:
         if enc:
             if not chunked:  # enable chunked, no need to deal with length
                 chunked = True
-            self.writers.append(DeflateWriter(enc))
+            self.writers.append(DeflateIter(enc))
         elif compress:
             if not chunked:  # enable chunked, no need to deal with length
                 chunked = True
             compress = compress if isinstance(compress, str) else 'deflate'
             self.headers['Content-Encoding'] = compress
-            self.writers.append(DeflateWriter(compress))
+            self.writers.append(DeflateIter(compress))
 
         # form data (x-www-form-urlencoded)
         if isinstance(data, dict):
@@ -208,11 +208,11 @@ class HttpRequest:
                 self.headers['Transfer-encoding'] = 'chunked'
 
             chunk_size = chunked if type(chunked) is int else 8196
-            self.writers.appendleft(ChunkedWriter(chunk_size))
+            self.writers.appendleft(ChunkedIter(chunk_size))
         else:
             if 'chunked' in te:
                 self.chunked = True
-                self.writers.appendleft(ChunkedWriter(8196))
+                self.writers.appendleft(ChunkedIter(8196))
             else:
                 self.chunked = False
                 self.headers['content-length'] = len(self.body)
@@ -238,7 +238,7 @@ class HttpRequest:
         wstream.write(b'\r\n')
 
         if self.body:
-            wstream.write_body(self.body, self.writers, self.chunked)
+            wstream.write_payload(self.body, self.writers, self.chunked)
 
 
 def str_to_bytes(s, encoding='utf-8'):

@@ -64,11 +64,11 @@ class TestServerProtocol(server.WSGIServerHttpProtocol):
 
         self.server = server
 
-    def create_wsgi_environ(self, rline, headers, payload):
-        environ = super().create_wsgi_environ(rline, headers, payload)
+    def create_wsgi_environ(self, rline, message, payload):
+        environ = super().create_wsgi_environ(rline, message, payload)
         environ['s_params'] = (
             self.server, self.transport, self.wstream,
-            rline, headers, payload)
+            rline, message.headers, payload, message.compression)
 
         return environ
 
@@ -88,7 +88,8 @@ class Router:
         self._environ = environ
         self._start_response = start_response
 
-        server, transport, stream, rline, headers, body = environ['s_params']
+        (server, transport, stream, 
+         rline, headers, body, cmode) = environ['s_params']
 
         # headers
         self._headers = http.client.HTTPMessage()
@@ -101,8 +102,7 @@ class Router:
         self._method = rline.method
         self._uri = rline.uri
         self._version = rline.version
-        #self._compression = cmode
-        self._compression = None
+        self._compression = cmode
         self._body = body.read()
 
         url = urllib.parse.urlsplit(self._uri)
@@ -132,6 +132,8 @@ class Router:
                     out = io.StringIO()
                     traceback.print_exc(file=out)
                     self._response(500, out.getvalue())
+
+                return
 
         return self._response(404)
 

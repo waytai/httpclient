@@ -5,6 +5,7 @@ import unittest
 import unittest.mock
 import urllib.parse
 
+from . import utils
 from . import protocol
 from .request import HttpRequest
 
@@ -154,13 +155,13 @@ class HttpRequestTests(unittest.TestCase):
         req = HttpRequest('get', 'http://python.org/', compress='deflate')
         self.assertTrue(req.chunked)
         self.assertEqual(req.headers['Content-Encoding'], 'deflate')
-        self.assertIsInstance(req.writers[-1], protocol.DeflateWriter)
+        self.assertIsInstance(req.writers[-1], utils.DeflateIter)
 
     def test_content_encoding_header(self):
         req = HttpRequest('get', 'http://python.org/',
                           headers={'Content-Encoding': 'deflate'})
         self.assertTrue(req.chunked)
-        self.assertIsInstance(req.writers[-1], protocol.DeflateWriter)
+        self.assertIsInstance(req.writers[-1], utils.DeflateIter)
 
     def test_chunked(self):
         req = HttpRequest(
@@ -173,7 +174,7 @@ class HttpRequestTests(unittest.TestCase):
             headers={'Transfer-encoding': 'chunked'})
         self.assertTrue(req.chunked)
 
-        self.assertIsInstance(req.writers[0], protocol.ChunkedWriter)
+        self.assertIsInstance(req.writers[0], utils.ChunkedIter)
 
     def test_chunked_explicit(self):
         req = HttpRequest(
