@@ -11,8 +11,6 @@ import io
 import logging
 import re
 import sys
-import time
-import tulip
 import urllib.parse
 import traceback
 
@@ -88,7 +86,7 @@ class Router:
         self._environ = environ
         self._start_response = start_response
 
-        (server, transport, stream, 
+        (server, transport, stream,
          rline, headers, body, cmode) = environ['s_params']
 
         # headers

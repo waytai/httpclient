@@ -1,13 +1,10 @@
 """Tests for protocol.py"""
 
-import http.client
 import unittest
 import unittest.mock
-import urllib.parse
-import zlib
-import gzip
 
 import tulip
+import tulip.http
 
 from . import utils
 from . import protocol
@@ -21,7 +18,6 @@ class HttpStreamReaderTests(unittest.TestCase):
 
         self.transport = unittest.mock.Mock()
         self.stream = protocol.HttpStreamReader(self.transport)
-        self.reader = protocol.LengthReader(4)
 
     def test_ctor(self):
         self.ev.close()

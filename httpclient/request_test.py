@@ -6,7 +6,6 @@ import unittest.mock
 import urllib.parse
 
 from . import utils
-from . import protocol
 from .request import HttpRequest
 
 
@@ -56,11 +55,6 @@ class HttpRequestTests(unittest.TestCase):
     def test_no_path(self):
         req = HttpRequest('get', 'http://python.org')
         self.assertEqual('/', req.path)
-
-    def test_content_encoding(self):
-        req = HttpRequest('get', 'http://python.org', auth=('nkim', '1234'))
-        self.assertIn('Authorization', req.headers)
-        self.assertEqual('Basic bmtpbToxMjM0', req.headers['Authorization'])
 
     def test_basic_auth(self):
         req = HttpRequest('get', 'http://python.org', auth=('nkim', '1234'))

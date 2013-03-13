@@ -36,7 +36,8 @@ def request(method, url, *,
        redirect following is allowed.
     compress: Boolean. Set to True if request has to be compressed
        with deflate encoding
-    chunked: Boolean or Integer. Set to chunk size for chunked transfer encoding
+    chunked: Boolean or Integer. Set to chunk size for chunked
+       transfer encoding
 
     Usage:
 
@@ -71,7 +72,7 @@ def request(method, url, *,
             t = done.pop()
             exc = t.exception()
             if exc:
-                raise ValueError(exc)
+                raise exc
             else:
                 transport, protocol = t.result()
         else:
@@ -86,7 +87,7 @@ def request(method, url, *,
             r_url = (response.headers.get('location') or
                      response.headers.get('uri'))
             if r_url[:7] not in ('http://', 'https:/'):
-                scheme, netloc, *_ = urllib.parse.urlsplit(url)
+                scheme, netloc = urllib.parse.urlsplit(url)[:2]
                 url = urllib.parse.urlunsplit(
                     (scheme, netloc, r_url, '', ''))
             else:

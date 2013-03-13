@@ -1,6 +1,6 @@
 """http server classes.
 
-TODO: 
+TODO:
   * config
   * use HTTPException
   * support EXPECT header
@@ -20,7 +20,6 @@ import itertools
 import logging
 import os
 import sys
-import time
 import tulip
 import traceback
 from email.utils import formatdate
@@ -242,15 +241,13 @@ class WSGIServerHttpProtocol(ServerHttpProtocol):
 
     @tulip.coroutine
     def handle_one_request(self, rline, message):
-        payload = io.BytesIO((yield from message.payload))
+        payload = io.BytesIO((yield from message.payload.read()))
 
         environ = {}
         response = None
         try:
-            r_start = time.monotonic()
-
             environ = self.create_wsgi_environ(rline, message, payload)
-            response = self.create_wsgi_response(rline, message.close)
+            response = self.create_wsgi_response(rline, message.should_close)
 
             respiter = self.wsgi(environ, response.start_response)
             if isinstance(respiter, tulip.Future):
@@ -261,8 +258,6 @@ class WSGIServerHttpProtocol(ServerHttpProtocol):
                     response.writer.write(item)
 
                 response.close()
-
-                r_duration = time.monotonic() - r_start
             finally:
                 if hasattr(respiter, "close"):
                     respiter.close()
@@ -403,7 +398,7 @@ class Response:
             'Server: {2}\r\n'
             'Date: {3}\r\n'
             'Connection: {4}'.format(
-                self.rline.version, self.status, 
+                self.rline.version, self.status,
                 SERVER_SOFTWARE, formatdate(), connection),
         ]
         if self.chunked:

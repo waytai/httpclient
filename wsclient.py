@@ -1,11 +1,9 @@
 """ websocket client """
 import logging
-import os
 import signal
 import sys
 
 import tulip
-import httpclient
 
 from wsproto import WebSocketProto
 

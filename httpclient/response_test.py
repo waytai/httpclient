@@ -1,9 +1,7 @@
 """Tests for protocol.py"""
 
-import http.client
 import unittest
 import unittest.mock
-import urllib.parse
 
 import tulip
 
@@ -48,32 +46,3 @@ class ResponseTests(unittest.TestCase):
             RuntimeError,
             self.loop.run_until_complete,
             tulip.Task(self.response.start(self.stream)))
-
-    def test_broken_length(self):
-        self.stream.feed_data(
-            b'HTTP/1.1 200 Ok\r\n'
-            b'Content-Length: ert\r\n\r\n')
-
-        self.assertRaises(
-            ValueError, self.loop.run_until_complete,
-            tulip.Task(self.response.start(self.stream)))
-
-    def _test_head_length_zero(self):
-        self.response.method = 'HEAD'
-        self.stream.feed_data(
-            b'HTTP/1.1 200 Ok\r\n'
-            b'Content-Length: 4\r\n\r\ntest')
-
-        r = self.loop.run_until_complete(
-            tulip.Task(self.response.start(self.stream, True)))
-        self.assertEqual(b'', r.content)
-
-    def _test_length_below_zero(self):
-        self.stream.feed_data(
-            b'HTTP/1.1 200 Ok\r\n'
-            b'Content-Length: -1\r\n\r\ntest')
-        self.stream.feed_eof()
-
-        r = self.loop.run_until_complete(
-            tulip.Task(self.response.start(self.stream, True)))
-        self.assertEqual(b'test', r.content)

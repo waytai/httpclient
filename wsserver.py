@@ -1,11 +1,6 @@
 """ websocket server """
 import signal
-import email.message
-import email.parser
 import http.client
-import os
-import re
-from pprint import pprint
 
 import tulip
 from httpclient import ServerHttpProtocol

@@ -3,10 +3,6 @@
 import http.client
 import io
 import json
-import re
-from tulip import tasks
-
-from .protocol import ChunkedReader, LengthReader, EofReader
 
 
 class HttpResponse:
@@ -61,7 +57,7 @@ class HttpResponse:
         self.body = message.payload
 
         if readbody:
-            self.content = yield from message.payload
+            self.content = yield from message.payload.read()
 
         return self
 
@@ -81,7 +77,7 @@ class HttpResponse:
 
     def read(self, decode=False):
         if self.content is None:
-            self.content = yield from self.body
+            self.content = yield from self.body.read()
 
         data = self.content
 

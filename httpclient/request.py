@@ -191,7 +191,8 @@ class HttpRequest:
             chunked = chunked or 8192
             boundary = uuid.uuid4().hex
 
-            self.body = encode_multipart_data(fields, bytes(boundary, 'latin1'))
+            self.body = encode_multipart_data(
+                fields, bytes(boundary, 'latin1'))
 
             if 'content-type' not in self.headers:
                 self.headers['content-type'] = (
@@ -278,7 +279,8 @@ def encode_multipart_data(fields, boundary, encoding='utf-8', chunk_size=8196):
                 fn, fp, ct = rec
             else:
                 fn, fp = rec
-                ct = (mimetypes.guess_type(fn)[0] or 'application/octet-stream')
+                ct = (mimetypes.guess_type(fn)[0] or
+                      'application/octet-stream')
 
             yield ('Content-Disposition: form-data; name="%s"; '
                    'filename="%s"\r\n' % (field, fn)).encode(encoding)

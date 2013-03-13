@@ -3,7 +3,7 @@
 import logging
 import re
 import signal
-import socket
+import sys
 import urllib.parse
 
 import tulip
@@ -29,7 +29,7 @@ class Crawler:
             url = urllib.parse.urljoin(parenturl, url)
             url, frag = urllib.parse.urldefrag(url)
             if (url.startswith(self.rooturl) and
-                url not in self.busy and url not in self.done):
+                    url not in self.busy and url not in self.done):
                 yield from self.sem.acquire()
                 task = self.process(url)
                 task.add_done_callback(lambda t: self.sem.release())
@@ -51,7 +51,6 @@ class Crawler:
     def process(self, url):
         ok = False
         response = None
-        extracted = set()
         self.busy.add(url)
 
         try:
