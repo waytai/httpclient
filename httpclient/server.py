@@ -157,7 +157,7 @@ class WSGIServerHttpProtocol(tulip.http.ServerHttpProtocol):
             for item in respiter:
                 response.writer.write(item)
 
-            response.eof()
+            response.write_eof()
         finally:
             if hasattr(respiter, "close"):
                 respiter.close()
@@ -210,11 +210,10 @@ class Response:
         status_code = int(status.split(' ', 1)[0])
 
         self.status = status
-        self.response = self.stream.start_response(
-            status_code, '%s.%s' % self.rline.version, self.close)
-        self.response.write_headers(*headers)
-        self.response.eof_headers()
-
+        self.response = tulip.http.Response(
+            self.transport, status_code, self.rline.version, self.close)
+        self.response.add_headers(*headers)
+        self.response._send_headers = True
         return self.response.write
 
     def write_eof(self):
