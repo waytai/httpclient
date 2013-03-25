@@ -2,17 +2,15 @@
 
 TODO:
   * config
-  * use HTTPException
   * support EXPECT header
   * url_scheme fix (Response)
-  * Logging
   * Proxy protocol
   * x-forward sec
   * wsgi file support
 
 """
 
-__all__ = ['ServerHttpProtocol', 'WSGIServerHttpProtocol']
+__all__ = ['WSGIServerHttpProtocol']
 
 import http.server
 import io
@@ -20,113 +18,17 @@ import itertools
 import logging
 import os
 import sys
-import tulip
 import traceback
 from email.utils import formatdate
 from urllib.parse import unquote, urlsplit
 
+import tulip
+import tulip.http
+
 from . import protocol
 
-SERVER_SOFTWARE = 'tulip/0.0'
 
-
-class HTTPException(Exception):
-
-    def __init__(self, code, message=''):
-        self.code = code
-        self.message = message
-
-
-class ServerHttpProtocol(protocol.HttpProtocol):
-
-    debug = False
-    handler = None
-    request_count = 0
-    closing = False
-
-    RESPONSES = http.server.BaseHTTPRequestHandler.responses
-    DEFAULT_ERROR_MESSAGE = """
-<html>
-  <head>
-    <title>%(status)s %(reason)s</title>
-  </head>
-  <body>
-    <h1>%(status)s %(reason)s</h1>
-    %(mesg)s
-  </body>
-</html>"""
-
-    def data_received(self, data):
-        if self.handler is None:
-            self.handler = tulip.Task(self.handle())
-
-        self.rstream.feed_data(data)
-
-    def connection_lost(self, exc):
-        if self.handler and not self.handler.done():
-            self.handler.cancel()
-            self.handler = None
-
-    def close(self):
-        self.closing = True
-
-    @tulip.coroutine
-    def handle(self):
-        rline = None
-        message = None
-        self.request_count += 1
-
-        try:
-            try:
-                rline = yield from self.rstream.read_request_line()
-                message = yield from self.rstream.read_message(
-                    rline.version, readall=False)
-            except tulip.CancelledError:
-                raise
-            except Exception as exc:
-                self.handle_error(400, rline, message, exc)
-                self.close()
-            else:
-                yield from self.handle_one_request(rline, message)
-
-        except tulip.CancelledError:
-            logging.debug("Ignored premature client disconnection.")
-        except Exception as exc:
-            self.handle_error(500, rline, message, exc)
-            self.close()
-        finally:
-            self.handler = None
-            if self.closing:
-                self.transport.close()
-
-    def handle_error(self, status=500, rline=None, message=None, exc=None):
-        try:
-            reason, mesg = self.RESPONSES[status]
-        except KeyError:
-            reason, mesg = '???', ''
-
-        if self.debug and exc is not None:
-            tb = traceback.format_exc()
-            mesg += '<br><h2>Traceback:</h2>\n<pre>%s</pre>' % tb
-
-        if status == 500:
-            logging.exception("Error handling request")
-
-        html = self.DEFAULT_ERROR_MESSAGE % {
-            'status': status, 'reason': reason, 'mesg': mesg}
-
-        headers = ('HTTP/1.1 %s %s\r\n'
-                   'Connection: close\r\n'
-                   'Content-Type: text/html\r\n'
-                   'Content-Length: %d\r\n'
-                   '\r\n' % (str(status), reason, len(html)))
-        self.wstream.write_str(headers + html)
-
-    def handle_one_request(self, rline, request):
-        raise NotImplementedError
-
-
-class WSGIServerHttpProtocol(ServerHttpProtocol):
+class WSGIServerHttpProtocol(tulip.http.ServerHttpProtocol):
 
     SCRIPT_NAME = os.environ.get('SCRIPT_NAME', '')
 
@@ -136,7 +38,7 @@ class WSGIServerHttpProtocol(ServerHttpProtocol):
         self.wsgi = app  # move to config
 
     def create_wsgi_response(self, rline, close):
-        return Response(rline, close, self.wstream)
+        return Response(self.wstream, rline, close)
 
     def create_wsgi_environ(self, rline, message, payload):
         url_scheme = 'http'
@@ -240,34 +142,28 @@ class WSGIServerHttpProtocol(ServerHttpProtocol):
         return environ
 
     @tulip.coroutine
-    def handle_one_request(self, rline, message):
+    def handle_request(self, info, message):
         payload = io.BytesIO((yield from message.payload.read()))
 
-        environ = {}
-        response = None
+        environ = self.create_wsgi_environ(info, message, payload)
+        response = self.create_wsgi_response(info, message.should_close)
+        environ['tulip.response'] = response
+
+        respiter = self.wsgi(environ, response.start_response)
+        if isinstance(respiter, tulip.Future):
+            respiter = yield from respiter
+
         try:
-            environ = self.create_wsgi_environ(rline, message, payload)
-            response = self.create_wsgi_response(rline, message.should_close)
+            for item in respiter:
+                response.writer.write(item)
 
-            respiter = self.wsgi(environ, response.start_response)
-            if isinstance(respiter, tulip.Future):
-                respiter = yield from respiter
-
-            try:
-                for item in respiter:
-                    response.writer.write(item)
-
-                response.close()
-            finally:
-                if hasattr(respiter, "close"):
-                    respiter.close()
-
+            response.eof()
         finally:
-            if response is not None:
-                if response.should_close():
-                    self.close()
-            else:
-                self.close()
+            if hasattr(respiter, "close"):
+                respiter.close()
+
+        if response.should_close():
+            self.close()
 
 
 class FileWrapper:
@@ -290,37 +186,16 @@ class FileWrapper:
 
 class Response:
 
-    HOP_HEADERS = {
-        'connection',
-        'keep-alive',
-        'proxy-authenticate',
-        'proxy-authorization',
-        'te',
-        'trailers',
-        'transfer-encoding',
-        'upgrade',
-        'server',
-        'date'}
+    status = None
+    writer = None
 
-    def __init__(self, rline, close, wstream):
+    def __init__(self, stream, rline, close):
+        self.stream = stream
         self.rline = rline
-        self.wstream = wstream
-        self.status = None
-        self.chunked = False
-        self.closing = close
-        self.length = None
-        self.upgrade = False
-        self.headers = []
-
-    def force_close(self):
-        self.closing = True
+        self.close = close
 
     def should_close(self):
-        if self.closing:
-            return True
-        if self.length is not None or self.chunked:
-            return False
-        return True
+        return self.response.should_close()
 
     def start_response(self, status, headers, exc_info=None):
         assert self.status is None, 'Response headers already set!'
@@ -332,79 +207,15 @@ class Response:
             finally:
                 exc_info = None
 
+        status_code = int(status.split(' ', 1)[0])
+
         self.status = status
-        self.process_headers(headers)
+        self.response = self.stream.start_response(
+            status_code, '%s.%s' % self.rline.version, self.close)
+        self.response.write_headers(*headers)
+        self.response.eof_headers()
 
-        # Only use chunked responses when the client is
-        # speaking HTTP/1.1 or newer and there was
-        # no Content-Length header set.
-        # Do not use chunked responses when the response is guaranteed to
-        # not have a response body (304, 204).
-        if (self.length is None and
-                self.rline.version > (1, 0) and
-                not self.status.startswith(('304', '204'))):
-            self.chunked = True
-            self.writer = protocol.ChunkedWriter(self.wstream)
+        return self.response.write
 
-        elif self.length is not None:
-            self.writer = protocol.LengthWriter(self.wstream, self.length)
-
-        else:
-            self.writer = protocol.EofWriter(self.wstream)
-
-        # send headers
-        self.wstream.write_str('%s\r\n\r\n' % '\r\n'.join(
-            itertools.chain(
-                self.get_default_headers(),
-                ('%s: %s' % (k, v) for k, v in self.headers))))
-
-        return self.writer.write
-
-    def process_headers(self, headers):
-        for name, value in headers:
-            assert isinstance(name, str), "%r is not a string" % name
-
-            name = name.strip()
-            lname = name.lower()
-
-            if lname == 'content-length':
-                self.length = int(value)
-
-            elif lname in self.HOP_HEADERS:
-                if lname == 'connection':
-                    # handle websocket
-                    if 'upgrade' in value.lower():
-                        self.upgrade = True
-                elif lname == 'upgrade':
-                    if 'websocket' in value.lower():
-                        self.headers.append((name, value))
-
-                # ignore hopbyhop headers
-                continue
-
-            self.headers.append((name, value))
-
-    def get_default_headers(self):
-        # set the connection header
-        if self.upgrade:
-            connection = 'upgrade'
-        elif self.should_close():
-            connection = 'close'
-        else:
-            connection = 'keep-alive'
-
-        headers = [
-            'HTTP/{0[0]}.{0[1]} {1}\r\n'
-            'Server: {2}\r\n'
-            'Date: {3}\r\n'
-            'Connection: {4}'.format(
-                self.rline.version, self.status,
-                SERVER_SOFTWARE, formatdate(), connection),
-        ]
-        if self.chunked:
-            headers.append('Transfer-Encoding: chunked')
-
-        return headers
-
-    def close(self):
-        self.writer.close()
+    def write_eof(self):
+        self.response.eof()

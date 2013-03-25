@@ -14,6 +14,9 @@ import sys
 import urllib.parse
 import traceback
 
+import tulip
+import tulip.http
+
 from . import server
 
 
@@ -27,7 +30,7 @@ class HttpServer:
 
     noresponse = False
 
-    def __init__(self, router, loop, host='127.0.0.1', port=8080):
+    def __init__(self, router, loop, host='127.0.0.1', port=9998):
         self.loop = loop
         self.host = host
         self.port = port
@@ -55,48 +58,43 @@ class HttpServer:
         return self.loop.start_serving(self.protocol, self.host, self.port)
 
 
-class TestServerProtocol(server.WSGIServerHttpProtocol):
+class TestServerProtocol(tulip.http.ServerHttpProtocol):
 
     def __init__(self, server, router):
-        super().__init__(router())
+        super().__init__(debug=True)
 
+        self.router = router
         self.server = server
 
-    def create_wsgi_environ(self, rline, message, payload):
-        environ = super().create_wsgi_environ(rline, message, payload)
-        environ['s_params'] = (
-            self.server, self.transport, self.wstream,
-            rline, message.headers, payload, message.compression)
-
-        return environ
-
-    def handle_one_request(self, rline, message):
+    def handle_request(self, info, message):
         if self.server.noresponse:
             return
 
-        yield from super().handle_one_request(rline, message)
+        payload = io.BytesIO((yield from message.payload.read()))
+        try:
+            router = self.router(
+                self.server, self.transport,
+                info, message.headers, payload, message.compression)
+            router.dispatch()
+        except:
+            import traceback
+            traceback.print_exc()
+            raise
 
 
 class Router:
 
-    _response_version = "HTTP/1.1"
+    _response_version = "1.1"
     _responses = http.server.BaseHTTPRequestHandler.responses
 
-    def __call__(self, environ, start_response):
-        self._environ = environ
-        self._start_response = start_response
-
-        (server, transport, stream,
-         rline, headers, body, cmode) = environ['s_params']
-
+    def __init__(self, server, transport, rline, headers, body, cmode):
         # headers
         self._headers = http.client.HTTPMessage()
         for hdr, val in headers:
-            self._headers[hdr] = val
+            self._headers.add_header(hdr, val)
 
         self._server = server
         self._transport = transport
-        self._stream = stream
         self._method = rline.method
         self._uri = rline.uri
         self._version = rline.version
@@ -106,9 +104,6 @@ class Router:
         url = urllib.parse.urlsplit(self._uri)
         self._path = url.path
         self._query = url.query
-
-        self.dispatch()
-        return []
 
     @staticmethod
     def define(rmatch):
@@ -135,8 +130,10 @@ class Router:
 
         return self._response(404)
 
-    def _response(self, code, body=None,
-                  headers=None, writers=(), chunked=False):
+    def _start_response(self, code):
+        return tulip.http.Response(self._transport, code)
+
+    def _response(self, response, body=None, headers=None, chunked=False):
         r_headers = {}
         for key, val in self._headers.items():
             key = '-'.join(p.capitalize() for p in key.split('-'))
@@ -207,8 +204,13 @@ class Router:
         if headers:
             hdrs.extend(headers.items())
 
-        # write status
-        write = self._start_response(
-            '%s %s' % (code, self._responses[code][0]), hdrs)
+        if chunked:
+            response.force_chunked()
 
-        write(str_to_bytes(body))  # writers
+        # headers
+        response.add_headers(*hdrs)
+        response.send_headers()
+
+        # write payload
+        response.write(str_to_bytes(body))
+        response.write_eof()

@@ -47,10 +47,6 @@ def request(method, url, *,
       <HttpResponse [200]>
 
     """
-
-    def factory():
-        return HttpProtocol(encoding)
-
     event_loop = events.get_event_loop()
 
     redirects = 0
@@ -63,19 +59,13 @@ def request(method, url, *,
         response = HttpResponse(request.method, request.path)
 
         conn = event_loop.create_connection(
-            factory, request.host, request.port, ssl=request.ssl)
+            HttpProtocol, request.host, request.port, ssl=request.ssl)
 
         # connection timeout
-        done, pending = yield from tasks.wait(
-            [start(conn, request, response, timeout)], timeout)
-        if done:
-            t = done.pop()
-            exc = t.exception()
-            if exc:
-                raise exc
-            else:
-                transport, protocol = t.result()
-        else:
+        try:
+            transport, protocol = yield from tasks.Task(
+                start(conn, request, response), timeout=timeout)
+        except futures.CancelledError:
             raise futures.TimeoutError
 
         # redirects
@@ -102,12 +92,16 @@ def request(method, url, *,
     return response
 
 
-@tasks.task
-def start(conn, request, response, timeout):
+@tasks.coroutine
+def start(conn, request, response):
     transport, protocol = yield from conn
 
-    request.start(protocol.wstream)
-    yield from response.start(protocol.rstream, True)
+    try:
+        yield from request.start(transport)
+        yield from response.start(protocol.stream, transport, True)
+    except:
+        import traceback
+        traceback.print_exc()
 
     return transport, protocol
 
@@ -120,9 +114,6 @@ def stream(method, url, *,
     Returns write stream and response coroutine.
 
     """
-    def factory():
-        return HttpProtocol(encoding)
-
     event_loop = events.get_event_loop()
 
     request = HttpRequest(
@@ -131,19 +122,12 @@ def stream(method, url, *,
     response = HttpResponse(request.method, request.path)
 
     conn = event_loop.create_connection(
-        factory, request.host, request.port, ssl=request.ssl)
+        HttpProtocol, request.host, request.port, ssl=request.ssl)
 
-    done, pending = yield from tasks.wait([conn], timeout)
-    if done:
-        t = done.pop()
-        exc = t.exception()
-        if exc:
-            raise ValueError(exc)
-        else:
-            transport, protocol = t.result()
-    else:
+    try:
+        transport, protocol = yield from tasks.Task(conn, timeout=timeout)
+    except futures.CancelledError:
         raise futures.TimeoutError
 
-    request.start(protocol.wstream)
-
-    return protocol.wstream, response.start(protocol.rstream)
+    request.start(transport)
+    return protocol.stream, response.start(protocol.stream, transport)

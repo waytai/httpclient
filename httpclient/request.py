@@ -12,7 +12,8 @@ import os
 import uuid
 import urllib.parse
 
-from .utils import ChunkedIter, DeflateIter
+import tulip
+import tulip.http
 
 
 class HttpRequest:
@@ -24,19 +25,28 @@ class HttpRequest:
     DEFAULT_HEADERS = {
         'Accept': '*/*',
         'Accept-Encoding': 'gzip, deflate',
-        'User-Agent': 'tulip http client'
     }
 
     body = b''
 
     def __init__(self, method, url, *,
-                 params=None, headers=None, data=None, cookies=None,
-                 files=None, auth=None, encoding='utf-8', version='1.1',
-                 compress=None, chunked=None):
+                 params=None,
+                 headers=None,
+                 data=None,
+                 cookies=None,
+                 files=None,
+                 auth=None,
+                 encoding='utf-8',
+                 version=(1, 1),
+                 compress=None,
+                 chunked=None):
         self.method = method.upper()
-        self.version = version
         self.encoding = encoding
-        self.writers = collections.deque()
+
+        if isinstance(version, str):
+            v = [l.strip() for l in version.split('.', 1)]
+            version = int(v[0]), int(v[1])
+        self.version = version
 
         scheme, netloc, path, query, fragment = urllib.parse.urlsplit(url)
         if not netloc:
@@ -130,18 +140,37 @@ class HttpRequest:
 
             self.headers['cookie'] = c.output(header='', sep=';').strip()
 
+        # auth
+        if auth:
+            if isinstance(auth, (tuple, list)) and len(auth) == 2:
+                # basic auth
+                self.headers['Authorization'] = 'Basic %s' % (
+                    base64.b64encode(
+                        ('%s:%s' % (auth[0], auth[1])).encode('latin1'))
+                    .strip().decode('latin1'))
+            else:
+                raise ValueError("Only basic auth is supported")
+
+        self._params = (chunked, compress, files, data, encoding)
+
+    def start(self, transport):
+        chunked, compress, files, data, encoding = self._params
+
+        request = tulip.http.Request(
+            transport, self.method, self.path, self.version)
+
         # Content-encoding
         enc = self.headers.get('Content-Encoding', '').lower()
         if enc:
             if not chunked:  # enable chunked, no need to deal with length
                 chunked = True
-            self.writers.append(DeflateIter(enc))
+            request.add_compression_filter(enc)
         elif compress:
             if not chunked:  # enable chunked, no need to deal with length
                 chunked = True
             compress = compress if isinstance(compress, str) else 'deflate'
             self.headers['Content-Encoding'] = compress
-            self.writers.append(DeflateIter(compress))
+            request.add_compression_filter(compress)
 
         # form data (x-www-form-urlencoded)
         if isinstance(data, dict):
@@ -209,37 +238,26 @@ class HttpRequest:
                 self.headers['Transfer-encoding'] = 'chunked'
 
             chunk_size = chunked if type(chunked) is int else 8196
-            self.writers.appendleft(ChunkedIter(chunk_size))
+            request.add_chunking_filter(chunk_size)
         else:
             if 'chunked' in te:
                 self.chunked = True
-                self.writers.appendleft(ChunkedIter(8196))
+                request.add_chunking_filter(8196)
             else:
                 self.chunked = False
                 self.headers['content-length'] = len(self.body)
 
-        # auth
-        if auth:
-            if isinstance(auth, (tuple, list)) and len(auth) == 2:
-                # basic auth
-                self.headers['Authorization'] = 'Basic %s' % (
-                    base64.b64encode(
-                        ('%s:%s' % (auth[0], auth[1])).encode('latin1'))
-                    .strip().decode('latin1'))
-            else:
-                raise ValueError("Only basic auth is supported")
+        request.add_headers(*self.headers.items())
+        request.send_headers()
 
-    def start(self, wstream):
-        line = '{} {} HTTP/{}\r\n'.format(self.method, self.path, self.version)
-        wstream.write_str(line)
+        if isinstance(self.body, (str, bytes)):
+            self.body = (self.body,)
 
-        for key, value in self.headers.items():
-            wstream.write_str('{}: {}\r\n'.format(key, value))
+        for chunk in self.body:
+            request.write(chunk)
 
-        wstream.write(b'\r\n')
-
-        if self.body:
-            wstream.write_payload(self.body, self.writers, self.chunked)
+        request.write_eof()
+        return []
 
 
 def str_to_bytes(s, encoding='utf-8'):

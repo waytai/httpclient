@@ -4,16 +4,19 @@ import http.client
 import io
 import json
 
+import tulip.http
+
 
 class HttpResponse:
 
     stream = None
-    headers = None
+    transport = None
 
     # from the Status-Line of the response
     version = None  # HTTP-Version
     status = None  # Status-Code
     reason = None  # Reason-Phrase
+    headers = None
 
     content = None
     will_close = None  # conn will close at end of response
@@ -28,11 +31,12 @@ class HttpResponse:
         print(self.headers, file=out)
         return out.getvalue()
 
-    def start(self, stream, readbody=False):
+    def start(self, stream, transport, readbody=False):
         if self.stream is not None:
             raise RuntimeError('Response is in process.')
 
         self.stream = stream
+        self.transport = transport
 
         # read status
         self.version, self.status, self.reason = (
@@ -62,18 +66,12 @@ class HttpResponse:
         return self
 
     def close(self):
-        if self.stream:
-            self.stream.close()
-            self.stream = None
+        if self.transport:
+            self.transport.close()
+            self.transport = None
 
     def isclosed(self):
-        # NOTE: it is possible that we will not ever call self.close(). This
-        #       case occurs when will_close is TRUE, length is None, and we
-        #       read up to the last byte, but NOT past it.
-        #
-        # IMPLIES: if will_close is FALSE, then self.close() will ALWAYS be
-        #          called, meaning self.isclosed() is meaningful.
-        return self.stream is None
+        return self.transport is None
 
     def read(self, decode=False):
         if self.content is None:
