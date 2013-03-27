@@ -1,63 +1,57 @@
-"""http server classes.
+"""wsgi server.
 
 TODO:
-  * config
-  * support EXPECT header
-  * url_scheme fix (Response)
-  * Proxy protocol
-  * x-forward sec
-  * wsgi file support
-
+  * proxy protocol
+  * x-forward security
+  * wsgi file support (os.sendfile)
 """
 
 __all__ = ['WSGIServerHttpProtocol']
 
-import http.server
+import inspect
 import io
-import itertools
-import logging
 import os
 import sys
-import traceback
-from email.utils import formatdate
 from urllib.parse import unquote, urlsplit
 
 import tulip
 import tulip.http
+from tulip.http import server
 
-from . import protocol
 
-
-class WSGIServerHttpProtocol(tulip.http.ServerHttpProtocol):
+class WSGIServerHttpProtocol(server.ServerHttpProtocol):
 
     SCRIPT_NAME = os.environ.get('SCRIPT_NAME', '')
 
-    def __init__(self, app, *args, **kw):
+    def __init__(self, app, readpayload=False, is_ssl=False, *args, **kw):
         super().__init__(*args, **kw)
 
         self.wsgi = app  # move to config
+        self.is_ssl = is_ssl
+        self.readpayload = readpayload
 
-    def create_wsgi_response(self, rline, close):
-        return Response(self.wstream, rline, close)
+    def create_wsgi_response(self, info, message):
+        return WsgiResponse(self.transport, info, message)
 
-    def create_wsgi_environ(self, rline, message, payload):
-        url_scheme = 'http'
-        uri_parts = urlsplit(rline.uri)
+    def create_wsgi_environ(self, info, message, payload):
+        uri_parts = urlsplit(info.uri)
+        url_scheme = 'https' if self.is_ssl else 'http'
 
         environ = {
             'wsgi.input': payload,
             'wsgi.errors': sys.stderr,
             'wsgi.version': (1, 0),
+            'wsgi.async': True,
             'wsgi.multithread': False,
             'wsgi.multiprocess': False,
             'wsgi.run_once': False,
             'wsgi.file_wrapper': FileWrapper,
             'wsgi.url_scheme': url_scheme,
-            'SERVER_SOFTWARE': SERVER_SOFTWARE,
-            'REQUEST_METHOD': rline.method,
+            'SERVER_SOFTWARE': tulip.http.HttpMessage.SERVER_SOFTWARE,
+            'REQUEST_METHOD': info.method,
             'QUERY_STRING': uri_parts.query or '',
-            'RAW_URI': rline.uri,
-            'SERVER_PROTOCOL': 'HTTP/%s.%s' % rline.version
+            'RAW_URI': info.uri,
+            'SERVER_PROTOCOL': 'HTTP/%s.%s' % info.version
         }
 
         # authors should be aware that REMOTE_HOST and REMOTE_ADDR
@@ -65,13 +59,13 @@ class WSGIServerHttpProtocol(tulip.http.ServerHttpProtocol):
         # http://www.ietf.org/rfc/rfc3875
         forward = self.transport.get_extra_info('addr', '127.0.0.1')
         script_name = self.SCRIPT_NAME
+        server = forward
 
         for hdr_name, hdr_value in message.headers:
             if hdr_name == 'EXPECT':
                 # handle expect
-                #if hdr_value.lower() == "100-continue":
-                #    sock.send("HTTP/1.1 100 Continue\r\n\r\n")
-                pass
+                if hdr_value.lower() == '100-continue':
+                    self.transport.write(b'HTTP/1.1 100 Continue\r\n\r\n')
             elif hdr_name == 'HOST':
                 server = hdr_value
             elif hdr_name == 'SCRIPT_NAME':
@@ -85,7 +79,7 @@ class WSGIServerHttpProtocol(tulip.http.ServerHttpProtocol):
 
             key = 'HTTP_' + hdr_name.replace('-', '_')
             if key in environ:
-                hdr_value = "%s,%s" % (environ[key], hdr_value)
+                hdr_value = '%s,%s' % (environ[key], hdr_value)
 
             environ[key] = hdr_value
 
@@ -93,7 +87,7 @@ class WSGIServerHttpProtocol(tulip.http.ServerHttpProtocol):
             # we only took the last one
             # http://en.wikipedia.org/wiki/X-Forwarded-For
             if ',' in forward:
-                forward = forward.rsplit(",", 1)[1].strip()
+                forward = forward.rsplit(',', 1)[-1].strip()
 
             # find host and port on ipv6 address
             if '[' in forward and ']' in forward:
@@ -119,87 +113,81 @@ class WSGIServerHttpProtocol(tulip.http.ServerHttpProtocol):
         if isinstance(server, str):
             server = server.split(':')
             if len(server) == 1:
-                if url_scheme == 'http':
-                    server.append('80')
-                elif url_scheme == 'https':
-                    server.append('443')
-                else:
-                    server.append('')
+                server.append('80' if url_scheme == 'http' else '443')
 
         environ['SERVER_NAME'] = server[0]
         environ['SERVER_PORT'] = str(server[1])
 
         path_info = uri_parts.path
         if script_name:
-            path_info = path_info.split(script_name, 1)[1]
+            path_info = path_info.split(script_name, 1)[-1]
 
         environ['PATH_INFO'] = unquote(path_info)
         environ['SCRIPT_NAME'] = script_name
 
-        environ['tulip.reader'] = self.rstream
-        environ['tulip.writer'] = self.wstream
+        environ['tulip.reader'] = self.stream
+        environ['tulip.writer'] = self.transport
 
         return environ
 
     @tulip.coroutine
     def handle_request(self, info, message):
-        payload = io.BytesIO((yield from message.payload.read()))
+        if self.readpayload:
+            payload = io.BytesIO((yield from message.payload.read()))
+        else:
+            payload = message.payload
 
         environ = self.create_wsgi_environ(info, message, payload)
-        response = self.create_wsgi_response(info, message.should_close)
-        environ['tulip.response'] = response
+        response = self.create_wsgi_response(info, message)
 
-        respiter = self.wsgi(environ, response.start_response)
-        if isinstance(respiter, tulip.Future):
-            respiter = yield from respiter
+        riter = self.wsgi(environ, response.start_response)
+        if isinstance(riter, tulip.Future) or inspect.isgenerator(riter):
+            riter = yield from riter
 
+        resp = response.response
         try:
-            for item in respiter:
-                response.writer.write(item)
+            for item in riter:
+                if isinstance(item, tulip.Future):
+                    item = yield from item
+                resp.write(item)
 
-            response.write_eof()
+            resp.write_eof()
         finally:
-            if hasattr(respiter, "close"):
-                respiter.close()
+            if hasattr(riter, 'close'):
+                riter.close()
 
-        if response.should_close():
+        if not resp.keep_alive():
             self.close()
 
 
 class FileWrapper:
 
-    def __init__(self, filelike, chunk_size=8192):
-        self.filelike = filelike
+    def __init__(self, fobj, chunk_size=8192):
+        self.fobj = fobj
         self.chunk_size = chunk_size
-        if hasattr(filelike, 'close'):
-            self.close = filelike.close
+        if hasattr(fobj, 'close'):
+            self.close = fobj.close
 
     def __iter__(self):
         return self
 
-    def __next__(self, key):
-        data = self.filelike.read(self.chunk_size)
+    def __next__(self):
+        data = self.fobj.read(self.chunk_size)
         if data:
             return data
         raise StopIteration
 
 
-class Response:
+class WsgiResponse:
 
     status = None
-    writer = None
 
-    def __init__(self, stream, rline, close):
-        self.stream = stream
-        self.rline = rline
-        self.close = close
-
-    def should_close(self):
-        return self.response.should_close()
+    def __init__(self, transport, info, message):
+        self.transport = transport
+        self.info = info
+        self.message = message
 
     def start_response(self, status, headers, exc_info=None):
-        assert self.status is None, 'Response headers already set!'
-
         if exc_info:
             try:
                 if self.status:
@@ -211,10 +199,8 @@ class Response:
 
         self.status = status
         self.response = tulip.http.Response(
-            self.transport, status_code, self.rline.version, self.close)
+            self.transport, status_code,
+            self.info.version, self.message.should_close)
         self.response.add_headers(*headers)
         self.response._send_headers = True
         return self.response.write
-
-    def write_eof(self):
-        self.response.eof()
