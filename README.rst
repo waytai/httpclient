@@ -1,4 +1,4 @@
-Code here is somewhat outdated. I'm moving code directly tulip repository https://code.google.com/p/tulip/
+Code here is outdated. I'm moving code directly tulip repository https://code.google.com/p/tulip/
 
 
 
