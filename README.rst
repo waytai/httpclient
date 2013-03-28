@@ -1,4 +1,5 @@
-Code here is outdated. I'm moving code directly tulip repository https://code.google.com/p/tulip/
+Most of code has been incorporated into main tulip repo, i'm going to remove this repo simetime next week.
+https://code.google.com/p/tulip/
 
 
 
