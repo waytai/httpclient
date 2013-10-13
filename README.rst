@@ -1,5 +1,7 @@
-Most of code has been incorporated into main tulip repo, i'm going to remove this repo simetime next week.
-https://code.google.com/p/tulip/
+This repo is closed.
+
+Http client/server implementation is in https://github.com/fafhrd91/asynchttp repo
+
 
 
 
